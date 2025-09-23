@@ -25,7 +25,7 @@ PID_DIR="pids"
 mkdir -p "$LOG_DIR" "$PID_DIR"
 
 # Start Broker
-export JAVA_OPTS="-Xms4G -Xmx4G"
+export JAVA_OPTS="-Xms4G -Xmx8G -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005"
 ../build/bin/pinot-admin.sh StartBroker \
   -zkAddress localhost:2191 \
   >> "$LOG_DIR/broker.log" 2>&1 &
@@ -35,7 +35,7 @@ echo $BROKER_PID > "$PID_DIR/broker.pid"
 echo "Broker started (PID: $BROKER_PID), logs: $LOG_DIR/broker.log"
 
 # Start Controller
-export JAVA_OPTS="-Xms4G -Xmx8G"
+export JAVA_OPTS="-Xms4G -Xmx8G -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5006"
 ../build/bin/pinot-admin.sh StartController \
   -zkAddress localhost:2191 \
   -controllerPort 9000 \
