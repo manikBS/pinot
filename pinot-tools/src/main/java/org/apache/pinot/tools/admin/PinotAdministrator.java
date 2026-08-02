@@ -43,6 +43,7 @@ import org.apache.pinot.tools.admin.command.GenerateDataCommand;
 import org.apache.pinot.tools.admin.command.GitHubEventsQuickStartCommand;
 import org.apache.pinot.tools.admin.command.ImportDataCommand;
 import org.apache.pinot.tools.admin.command.JsonToPinotSchema;
+import org.apache.pinot.tools.admin.command.LaunchBackfillIngestionJobCommand;
 import org.apache.pinot.tools.admin.command.LaunchDataIngestionJobCommand;
 import org.apache.pinot.tools.admin.command.LaunchSparkDataIngestionJobCommand;
 import org.apache.pinot.tools.admin.command.MoveReplicaGroup;
@@ -74,22 +75,19 @@ import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 
 
-/**
- * Class to implement Pinot Administrator, that provides the following commands:
- *
- * System property: `pinot.admin.system.exit`(default to false) is used to decide if System.exit(...) will be called
- * with exit code.
- *
- * Sample Usage in Commandline:
- *  JAVA_OPTS="-Xms4G -Xmx4G -Dpinot.admin.system.exit=true" \
- *  bin/pinot-admin.sh AddTable \
- *    -schemaFile /my/path/to/table/schema.json \
- *    -tableConfigFile /my/path/to/table/tableConfig.json \
- *    -controllerHost localhost \
- *    -controllerPort 9000 \
- *    -exec
- *
- */
+/// Class to implement Pinot Administrator, that provides the following commands:
+///
+/// System property: `pinot.admin.system.exit`(default to false) is used to decide if System.exit(...) will be called
+/// with exit code.
+///
+/// Sample Usage in Commandline:
+///  JAVA_OPTS="-Xms4G -Xmx4G -Dpinot.admin.system.exit=true" \
+///  bin/pinot-admin.sh AddTable \
+///    -schemaFile /my/path/to/table/schema.json \
+///    -tableConfigFile /my/path/to/table/tableConfig.json \
+///    -controllerHost localhost \
+///    -controllerPort 9000 \
+///    -exec
 public class PinotAdministrator {
   private static final Logger LOGGER = LoggerFactory.getLogger(PinotAdministrator.class);
   private static final Map<String, Command> SUBCOMMAND_MAP = new HashMap<>();
@@ -100,6 +98,7 @@ public class PinotAdministrator {
     SUBCOMMAND_MAP.put("OperateClusterConfig", new OperateClusterConfigCommand());
     SUBCOMMAND_MAP.put("GenerateData", new GenerateDataCommand());
     SUBCOMMAND_MAP.put("LaunchDataIngestionJob", new LaunchDataIngestionJobCommand());
+    SUBCOMMAND_MAP.put("LaunchBackfillIngestionJob", new LaunchBackfillIngestionJobCommand());
     SUBCOMMAND_MAP.put("LaunchSparkDataIngestionJob", new LaunchSparkDataIngestionJobCommand());
     SUBCOMMAND_MAP.put("CreateSegment", new CreateSegmentCommand());
     SUBCOMMAND_MAP.put("ImportData", new ImportDataCommand());
@@ -210,7 +209,7 @@ public class PinotAdministrator {
     pinotAdministrator.execute(args);
     if ((pinotAdministrator._status != 0)
         && Boolean.parseBoolean(System.getProperties().getProperty("pinot.admin.system.exit"))) {
-        System.exit(pinotAdministrator._status);
+      System.exit(pinotAdministrator._status);
     }
   }
 }

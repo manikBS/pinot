@@ -29,9 +29,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import javax.activation.UnsupportedDataTypeException;
@@ -85,13 +83,8 @@ public class RealtimeKinesisIntegrationTest extends BaseKinesisIntegrationTest {
     waitForAllDocsLoadedKinesis(120_000L);
   }
 
-  protected void waitForAllDocsLoadedKinesis(long timeoutMs)
-      throws Exception {
-    waitForAllDocsLoadedKinesis(timeoutMs, true);
-  }
-
-  protected void waitForAllDocsLoadedKinesis(long timeoutMs, boolean raiseError) {
-    TestUtils.waitForCondition(new Function<Void, Boolean>() {
+  protected void waitForAllDocsLoadedKinesis(long timeoutMs) {
+    TestUtils.waitForCondition(new Function<>() {
       @Nullable
       @Override
       public Boolean apply(@Nullable Void aVoid) {
@@ -102,12 +95,12 @@ public class RealtimeKinesisIntegrationTest extends BaseKinesisIntegrationTest {
           return null;
         }
       }
-    }, 1000L, timeoutMs, "Failed to load " + _totalRecordsPushedInStream + " documents", raiseError);
+    }, 1000L, timeoutMs, "Failed to load " + _totalRecordsPushedInStream + " documents");
   }
 
   @Override
   public List<String> getNoDictionaryColumns() {
-    return Collections.emptyList();
+    return List.of();
   }
 
   @Override
@@ -258,9 +251,7 @@ public class RealtimeKinesisIntegrationTest extends BaseKinesisIntegrationTest {
     if (StringUtils.isNotBlank(line)) {
       JsonNode dataObject = JsonUtils.stringToJsonNode(line);
 
-      Iterator<Map.Entry<String, JsonNode>> fieldIterator = dataObject.fields();
-      while (fieldIterator.hasNext()) {
-        Map.Entry<String, JsonNode> field = fieldIterator.next();
+      for (Map.Entry<String, JsonNode> field : dataObject.properties()) {
         String fieldName = field.getKey();
         JsonNodeType fieldDataType = field.getValue().getNodeType();
 

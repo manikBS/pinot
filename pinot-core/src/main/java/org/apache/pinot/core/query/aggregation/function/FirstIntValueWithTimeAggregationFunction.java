@@ -21,6 +21,7 @@ package org.apache.pinot.core.query.aggregation.function;
 import org.apache.pinot.common.CustomObject;
 import org.apache.pinot.common.request.context.ExpressionContext;
 import org.apache.pinot.common.utils.DataSchema.ColumnDataType;
+import org.apache.pinot.common.utils.RoaringBitmapUtils;
 import org.apache.pinot.core.common.BlockValSet;
 import org.apache.pinot.core.common.ObjectSerDeUtils;
 import org.apache.pinot.core.query.aggregation.groupby.GroupByResultHolder;
@@ -29,17 +30,16 @@ import org.apache.pinot.segment.local.customobject.ValueLongPair;
 import org.roaringbitmap.IntIterator;
 
 
-/**
- * This function is used for FirstWithTime calculations for data column with int/boolean type.
- * <p>The function can be used as FirstWithTime(dataExpression, timeExpression, 'int')
- * or FirstWithTime(dataExpression, timeExpression, 'boolean')
- * <p>Following arguments are supported:
- * <ul>
- *   <li>dataExpression: expression that contains the int/boolean data column to be calculated first on</li>
- *   <li>timeExpression: expression that contains the column to be used to decide which data is first, can be any
- *   Numeric column</li>
- * </ul>
- */
+/// This function is used for FirstWithTime calculations for data column with int/boolean type.
+///
+/// The function can be used as FirstWithTime(dataExpression, timeExpression, 'int')
+/// or FirstWithTime(dataExpression, timeExpression, 'boolean')
+///
+/// Following arguments are supported:
+///
+/// - dataExpression: expression that contains the int/boolean data column to be calculated first on
+/// - timeExpression: expression that contains the column to be used to decide which data is first, can be any
+///   Numeric column
 public class FirstIntValueWithTimeAggregationFunction extends FirstWithTimeAggregationFunction<Integer> {
   private final static ValueLongPair<Integer> DEFAULT_VALUE_TIME_PAIR =
       new IntLongPair(Integer.MIN_VALUE, Long.MAX_VALUE);
@@ -74,7 +74,7 @@ public class FirstIntValueWithTimeAggregationFunction extends FirstWithTimeAggre
     long[] timeValues = timeValSet.getLongValuesSV();
 
     IntIterator nullIdxIterator = orNullIterator(blockValSet, timeValSet);
-    forEachNotNull(length, nullIdxIterator, (from, to) -> {
+    RoaringBitmapUtils.forEachUnset(length, nullIdxIterator, (from, to) -> {
       for (int i = from; i < to; i++) {
         int data = intValues[i];
         long time = timeValues[i];
@@ -90,7 +90,7 @@ public class FirstIntValueWithTimeAggregationFunction extends FirstWithTimeAggre
     long[] timeValues = timeValSet.getLongValuesSV();
 
     IntIterator nullIdxIterator = orNullIterator(blockValSet, timeValSet);
-    forEachNotNull(length, nullIdxIterator, (from, to) -> {
+    RoaringBitmapUtils.forEachUnset(length, nullIdxIterator, (from, to) -> {
       for (int i = from; i < to; i++) {
         int value = intValues[i];
         long time = timeValues[i];

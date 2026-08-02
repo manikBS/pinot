@@ -22,22 +22,23 @@ import com.google.common.base.Preconditions;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import javax.annotation.Nullable;
 import org.apache.commons.configuration2.PropertiesConfiguration;
 import org.apache.commons.configuration2.ex.ConfigurationException;
 import org.apache.commons.io.FileUtils;
+import org.apache.pinot.common.metrics.ServerMeter;
+import org.apache.pinot.common.metrics.ServerMetrics;
 import org.apache.pinot.segment.local.segment.index.loader.columnminmaxvalue.ColumnMinMaxValueGenerator;
 import org.apache.pinot.segment.local.segment.index.loader.columnminmaxvalue.ColumnMinMaxValueGeneratorMode;
 import org.apache.pinot.segment.local.segment.index.loader.defaultcolumn.DefaultColumnHandler;
 import org.apache.pinot.segment.local.segment.index.loader.defaultcolumn.DefaultColumnHandlerFactory;
-import org.apache.pinot.segment.local.segment.index.loader.invertedindex.InvertedIndexHandler;
+import org.apache.pinot.segment.local.segment.index.loader.invertedindex.LegacyRawValueInvertedIndexCleanup;
 import org.apache.pinot.segment.local.segment.index.loader.invertedindex.MultiColumnTextIndexHandler;
 import org.apache.pinot.segment.local.startree.StarTreeBuilderUtils;
 import org.apache.pinot.segment.local.startree.v2.builder.MultipleTreesBuilder;
 import org.apache.pinot.segment.local.startree.v2.builder.StarTreeV2BuilderConfig;
-import org.apache.pinot.segment.local.utils.SegmentOperationsThrottler;
+import org.apache.pinot.segment.local.utils.SegmentOperationsThrottlerSet;
 import org.apache.pinot.segment.spi.V1Constants;
 import org.apache.pinot.segment.spi.index.IndexHandler;
 import org.apache.pinot.segment.spi.index.IndexService;
@@ -57,15 +58,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/**
- * Use mmap to load the segment and perform all pre-processing steps. (This can be slow)
- * <p>Pre-processing steps include:
- * <ul>
- *   <li>Use {@link InvertedIndexHandler} to create inverted indices</li>
- *   <li>Use {@link DefaultColumnHandler} to update auto-generated default columns</li>
- *   <li>Use {@link ColumnMinMaxValueGenerator} to add min/max value to column metadata</li>
- * </ul>
- */
+/// Use mmap to load the segment and perform all pre-processing steps. (This can be slow)
+///
+/// Pre-processing steps include:
+///
+/// - Use [InvertedIndexHandler] to create inverted indices
+/// - Use [DefaultColumnHandler] to update auto-generated default columns
+/// - Use [ColumnMinMaxValueGenerator] to add min/max value to column metadata
 public class SegmentPreProcessor implements AutoCloseable {
   private static final Logger LOGGER = LoggerFactory.getLogger(SegmentPreProcessor.class);
 
@@ -95,7 +94,7 @@ public class SegmentPreProcessor implements AutoCloseable {
   }
 
   // TODO: Reduce segment metadata reload, and reload it only if it is modified.
-  public void process(@Nullable SegmentOperationsThrottler segmentOperationsThrottler)
+  public void process(@Nullable SegmentOperationsThrottlerSet segmentOperationsThrottlerSet)
       throws Exception {
     SegmentMetadataImpl segmentMetadata = _segmentDirectory.getSegmentMetadata();
     String segmentName = segmentMetadata.getName();
@@ -111,6 +110,12 @@ public class SegmentPreProcessor implements AutoCloseable {
     removeInvertedIndexTempFiles(indexDir);
 
     try (SegmentDirectory.Writer segmentWriter = _segmentDirectory.createWriter()) {
+      // Backward-compat shim: invalidate any legacy raw-value embedded-dictionary inverted indexes left over from
+      // PR #17060 (reverted by PR #18410) so the standard handlers can rebuild them in the dict-id format. Must
+      // run before any handler that may try to read the inverted-index buffer. Safe to delete after Pinot 1.7;
+      // see [LegacyRawValueInvertedIndexCleanup] javadoc for the full sunset checklist.
+      LegacyRawValueInvertedIndexCleanup.removeLegacyRawValueInvertedIndexes(segmentWriter);
+
       // Update default columns according to the schema.
       DefaultColumnHandler defaultColumnHandler =
           DefaultColumnHandlerFactory.getDefaultColumnHandler(indexDir, segmentMetadata, _indexLoadingConfig,
@@ -118,13 +123,23 @@ public class SegmentPreProcessor implements AutoCloseable {
       defaultColumnHandler.updateDefaultColumns();
       _segmentDirectory.reloadMetadata();
 
+      // Resolve per-key index configs for OPEN_STRUCT child columns so index handlers don't strip
+      // inverted/range indexes that the OpenStructColumnSplitter wrote during segment creation.
+      _indexLoadingConfig.addOpenStructChildConfigs(
+          (SegmentMetadataImpl) _segmentDirectory.getSegmentMetadata());
+
       // Update single-column indices, like inverted index, json index etc.
       List<IndexHandler> indexHandlers = new ArrayList<>();
 
       // We cannot just create all the index handlers in a random order.
-      // Specifically, ForwardIndexHandler needs to be executed first. This is because it modifies the segment metadata
-      // while rewriting forward index to create a dictionary. Some other handlers (like the range one) assume that
-      // metadata was already been modified by ForwardIndexHandler.
+      // Specifically, ForwardIndexHandler MUST run first. It is the only handler that:
+      //   (a) creates the shared dictionary for a RAW forward index column when a secondary index requires one
+      //       (ENABLE_DICTIONARY operation in ForwardIndexHandler.createDictionaryForRawForwardIndex);
+      //   (b) updates the segment metadata's HAS_DICTIONARY / FORWARD_INDEX_ENCODING properties accordingly.
+      // The InvertedIndexHandler / RangeIndexHandler / FSTIndexHandler then read the freshly-reloaded metadata and
+      // build dict-id-based indexes on top of the new shared dictionary. If this order is violated, downstream
+      // handlers fail with an IllegalStateException because the dictionary they require does not yet exist.
+      // Any future change to handler scheduling MUST preserve: ForwardIndexHandler → reloadMetadata → other handlers.
       IndexHandler forwardHandler = createHandler(StandardIndexes.forward());
       indexHandlers.add(forwardHandler);
       forwardHandler.updateIndices(segmentWriter);
@@ -163,12 +178,12 @@ public class SegmentPreProcessor implements AutoCloseable {
     // Startree creation will load the segment again, so we need to close and re-open the segment writer to make sure
     // that the other required indices (e.g. forward index) are up-to-date.
     try (SegmentDirectory.Writer segmentWriter = _segmentDirectory.createWriter()) {
-      if (processStarTrees(indexDir, segmentOperationsThrottler)) {
+      if (processStarTrees(indexDir, segmentOperationsThrottlerSet)) {
         _segmentDirectory.reloadMetadata();
         segmentWriter.save();
       }
       // Create/modify/remove multi-col text index if required.
-      if (processMultiColTextIndex(indexDir, segmentWriter, segmentOperationsThrottler)) {
+      if (processMultiColTextIndex(indexDir, segmentWriter, segmentOperationsThrottlerSet)) {
         // NOTE: When adding new steps after this, un-comment the next line.
         //_segmentDirectory.reloadMetadata();
         segmentWriter.save();
@@ -181,11 +196,9 @@ public class SegmentPreProcessor implements AutoCloseable {
         _tableConfig);
   }
 
-  /**
-   * This method checks if there is any discrepancy between the segment and current table config and schema.
-   * If so, it returns true indicating the segment needs to be reprocessed. Right now, the default columns,
-   * all types of indices and column min/max values are checked against what's set in table config and schema.
-   */
+  /// This method checks if there is any discrepancy between the segment and current table config and schema.
+  /// If so, it returns true indicating the segment needs to be reprocessed. Right now, the default columns,
+  /// all types of indices and column min/max values are checked against what's set in table config and schema.
   public boolean needProcess()
       throws Exception {
     SegmentMetadataImpl segmentMetadata = _segmentDirectory.getSegmentMetadata();
@@ -235,7 +248,7 @@ public class SegmentPreProcessor implements AutoCloseable {
     ColumnMinMaxValueGeneratorMode columnMinMaxValueGeneratorMode =
         _indexLoadingConfig.getColumnMinMaxValueGeneratorMode();
     if (columnMinMaxValueGeneratorMode == ColumnMinMaxValueGeneratorMode.NONE) {
-      return Collections.emptyList();
+      return List.of();
     }
     ColumnMinMaxValueGenerator columnMinMaxValueGenerator =
         new ColumnMinMaxValueGenerator(_segmentDirectory.getSegmentMetadata(), null, columnMinMaxValueGeneratorMode);
@@ -270,7 +283,7 @@ public class SegmentPreProcessor implements AutoCloseable {
   }
 
   private boolean processMultiColTextIndex(File indexDir, SegmentDirectory.Writer segmentWriter,
-      @Nullable SegmentOperationsThrottler segmentOperationsThrottler)
+      @Nullable SegmentOperationsThrottlerSet segmentOperationsThrottlerSet)
       throws Exception {
     SegmentMetadataImpl segmentMetadata = _segmentDirectory.getSegmentMetadata();
     String segmentName = segmentMetadata.getName();
@@ -295,8 +308,8 @@ public class SegmentPreProcessor implements AutoCloseable {
       return false;
     }
 
-    if (segmentOperationsThrottler != null) {
-      segmentOperationsThrottler.getSegmentMultiColTextIndexPreprocessThrottler().acquire();
+    if (segmentOperationsThrottlerSet != null) {
+      segmentOperationsThrottlerSet.getSegmentMultiColTextIndexPreprocessThrottler().acquire();
     }
     try {
       if (remove) {
@@ -314,8 +327,8 @@ public class SegmentPreProcessor implements AutoCloseable {
         handler.postUpdateIndicesCleanup(segmentWriter);
       }
     } finally {
-      if (segmentOperationsThrottler != null) {
-        segmentOperationsThrottler.getSegmentMultiColTextIndexPreprocessThrottler().release();
+      if (segmentOperationsThrottlerSet != null) {
+        segmentOperationsThrottlerSet.getSegmentMultiColTextIndexPreprocessThrottler().release();
       }
     }
     return true;
@@ -343,7 +356,7 @@ public class SegmentPreProcessor implements AutoCloseable {
   }
 
   private boolean processStarTrees(File indexDir,
-      @Nullable SegmentOperationsThrottler segmentOperationsThrottler)
+      @Nullable SegmentOperationsThrottlerSet segmentOperationsThrottlerSet)
       throws Exception {
     if (!_indexLoadingConfig.isEnableDynamicStarTreeCreation()) {
       return false;
@@ -375,8 +388,8 @@ public class SegmentPreProcessor implements AutoCloseable {
       return false;
     }
 
-    if (segmentOperationsThrottler != null) {
-      segmentOperationsThrottler.getSegmentStarTreePreprocessThrottler().acquire();
+    if (segmentOperationsThrottlerSet != null) {
+      segmentOperationsThrottlerSet.getSegmentStarTreePreprocessThrottler().acquire();
     }
     try {
       if (shouldRemoveStarTree) {
@@ -385,23 +398,35 @@ public class SegmentPreProcessor implements AutoCloseable {
         StarTreeBuilderUtils.removeStarTrees(indexDir);
       } else {
         // NOTE: Always use OFF_HEAP mode on server side.
-        try (MultipleTreesBuilder builder = new MultipleTreesBuilder(starTreeBuilderConfigs, indexDir,
-            MultipleTreesBuilder.BuildMode.OFF_HEAP)) {
+        // Pass _indexLoadingConfig so downstream readers can resolve table-level configs we set
+        MultipleTreesBuilder builder = new MultipleTreesBuilder(starTreeBuilderConfigs, indexDir,
+            MultipleTreesBuilder.BuildMode.OFF_HEAP, _indexLoadingConfig);
+        // We don't create the builder using the try-with-resources pattern because builder.close() performs
+        // some clean-up steps to roll back the star-tree index to the previous state if it exists. If this goes wrong
+        // the star-tree index can be in an inconsistent state. To prevent that, when builder.close() throws an
+        // exception we want to propagate that up instead of ignoring it. This can get clunky when using
+        // try-with-resources as in this scenario the close() exception will be added to the suppressed exception list
+        // rather than thrown as the main exception, even though the original exception thrown on build() is ignored.
+        try {
           builder.build();
+        } catch (Exception e) {
+          String tableNameWithType = _tableConfig.getTableName();
+          LOGGER.error("Failed to build star-tree index for table: {}, skipping", tableNameWithType, e);
+          ServerMetrics.get().addMeteredTableValue(tableNameWithType, ServerMeter.STAR_TREE_INDEX_BUILD_FAILURES, 1);
+        } finally {
+          builder.close();
         }
       }
     } finally {
-      if (segmentOperationsThrottler != null) {
-        segmentOperationsThrottler.getSegmentStarTreePreprocessThrottler().release();
+      if (segmentOperationsThrottlerSet != null) {
+        segmentOperationsThrottlerSet.getSegmentStarTreePreprocessThrottler().release();
       }
     }
     return true;
   }
 
-  /**
-   * Remove all the existing inverted index temp files before loading segments, by looking
-   * for all files in the directory and remove the ones with  '.bitmap.inv.tmp' extension.
-   */
+  /// Remove all the existing inverted index temp files before loading segments, by looking
+  /// for all files in the directory and remove the ones with  '.bitmap.inv.tmp' extension.
   private void removeInvertedIndexTempFiles(File indexDir) {
     File[] directoryListing = indexDir.listFiles();
     if (directoryListing == null) {

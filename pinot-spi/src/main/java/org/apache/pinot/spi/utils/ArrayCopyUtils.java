@@ -23,9 +23,7 @@ import java.sql.Timestamp;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
-/**
- * The class <code>ArrayCopyUtils</code> provides methods to copy values across arrays of different types.
- */
+/// The class `ArrayCopyUtils` provides methods to copy values across arrays of different types.
 public class ArrayCopyUtils {
   private ArrayCopyUtils() {
   }
@@ -489,6 +487,63 @@ public class ArrayCopyUtils {
       int rowLength = src[i].length;
       dest[i] = new String[rowLength];
       copy(src[i], dest[i], rowLength);
+    }
+  }
+
+  public static void copy(BigDecimal[][] src, int[][] dest, int length) {
+    for (int i = 0; i < length; i++) {
+      int rowLength = src[i].length;
+      dest[i] = new int[rowLength];
+      copy(src[i], dest[i], rowLength);
+    }
+  }
+
+  public static void copy(BigDecimal[][] src, long[][] dest, int length) {
+    for (int i = 0; i < length; i++) {
+      int rowLength = src[i].length;
+      dest[i] = new long[rowLength];
+      copy(src[i], dest[i], rowLength);
+    }
+  }
+
+  public static void copy(BigDecimal[][] src, float[][] dest, int length) {
+    for (int i = 0; i < length; i++) {
+      int rowLength = src[i].length;
+      dest[i] = new float[rowLength];
+      copy(src[i], dest[i], rowLength);
+    }
+  }
+
+  public static void copy(BigDecimal[][] src, double[][] dest, int length) {
+    for (int i = 0; i < length; i++) {
+      int rowLength = src[i].length;
+      dest[i] = new double[rowLength];
+      copy(src[i], dest[i], rowLength);
+    }
+  }
+
+  public static void copyToBoolean(BigDecimal[][] src, int[][] dest, int length) {
+    for (int i = 0; i < length; i++) {
+      int rowLength = src[i].length;
+      dest[i] = new int[rowLength];
+      copyToBoolean(src[i], dest[i], rowLength);
+    }
+  }
+
+  public static void copy(BigDecimal[][] src, String[][] dest, int length) {
+    for (int i = 0; i < length; i++) {
+      int rowLength = src[i].length;
+      dest[i] = new String[rowLength];
+      copy(src[i], dest[i], rowLength);
+    }
+  }
+
+  public static void copy(BigDecimal[][] src, byte[][][] dest, int length) {
+    for (int i = 0; i < length; i++) {
+      int rowLength = src[i].length;
+      byte[][] bytesValues = new byte[rowLength][];
+      copy(src[i], bytesValues, rowLength);
+      dest[i] = bytesValues;
     }
   }
 

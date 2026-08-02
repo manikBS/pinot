@@ -49,9 +49,7 @@ public abstract class BaseMapDataSource extends BaseDataSource implements MapDat
     _keyDataSources = new HashMap<>();
   }
 
-  /**
-   * Get the map FieldSpec.
-   */
+  /// Get the map FieldSpec.
   public ComplexFieldSpec.MapFieldSpec getFieldSpec() {
     return ComplexFieldSpec.toMapFieldSpec((ComplexFieldSpec) getDataSourceMetadata().getFieldSpec());
   }
@@ -62,17 +60,15 @@ public abstract class BaseMapDataSource extends BaseDataSource implements MapDat
     return null;
   }
 
-  /**
-   * Get the Data Source representation of a single key within this map column.
-   *
-   * @param key to get the DataSource for
-   * @return DataSource for the key
-   */
-  public DataSource getKeyDataSource(String key) {
+  /// Get the Data Source representation of a single key within this map column.
+  ///
+  /// @param key to get the DataSource for
+  /// @return DataSource for the key
+  public DataSource getDataSource(String key) {
     if (_keyDataSources.containsKey(key)) {
       return _keyDataSources.get(key);
     }
-    Map<IndexType, IndexReader> indexes = getMapIndexReader().getKeyIndexes(key);
+    Map<IndexType, IndexReader> indexes = getMapIndexReader().getIndexes(key);
 
     if (indexes == null) {
       // The key does not exist in the map
@@ -80,7 +76,7 @@ public abstract class BaseMapDataSource extends BaseDataSource implements MapDat
     }
 
     try (ColumnIndexContainer indexContainer = new ColumnIndexContainer.FromMap(indexes)) {
-      ColumnMetadata keyMeta = getMapIndexReader().getKeyMetadata(key);
+      ColumnMetadata keyMeta = getMapIndexReader().getColumnMetadata(key);
       ImmutableDataSource dataSource = new ImmutableDataSource(keyMeta, indexContainer);
       _keyDataSources.put(key, dataSource);
       return dataSource;
@@ -92,22 +88,22 @@ public abstract class BaseMapDataSource extends BaseDataSource implements MapDat
 
   public abstract MapIndexReader getMapIndexReader();
 
-  public Map<String, DataSource> getKeyDataSources() {
+  public Map<String, DataSource> getDataSources() {
     MapIndexReader mapIndexReader = (MapIndexReader) getForwardIndex();
     assert mapIndexReader != null;
     Map<String, DataSource> keyDataSources = new HashMap<>();
     Set<String> allKeys = mapIndexReader.getKeys();
-    allKeys.forEach(key -> keyDataSources.put(key, getKeyDataSource(key)));
+    allKeys.forEach(key -> keyDataSources.put(key, getDataSource(key)));
     return keyDataSources;
   }
 
   @Override
-  public DataSourceMetadata getKeyDataSourceMetadata(String key) {
+  public DataSourceMetadata getDataSourceMetadata(String key) {
     throw new UnsupportedOperationException();
   }
 
   @Override
-  public ColumnIndexContainer getKeyIndexContainer(String key) {
+  public ColumnIndexContainer getIndexContainer(String key) {
     throw new UnsupportedOperationException();
   }
 }

@@ -25,7 +25,7 @@ import it.unimi.dsi.fastutil.objects.Object2LongOpenCustomHashMap;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenCustomHashMap;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableSet;
@@ -37,7 +37,6 @@ import javax.annotation.concurrent.ThreadSafe;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
-import org.apache.pinot.core.data.manager.provider.TableDataManagerProvider;
 import org.apache.pinot.segment.local.data.manager.SegmentDataManager;
 import org.apache.pinot.segment.local.segment.readers.PinotSegmentRecordReader;
 import org.apache.pinot.segment.spi.ImmutableSegment;
@@ -50,15 +49,13 @@ import org.apache.pinot.spi.data.readers.GenericRow;
 import org.apache.pinot.spi.data.readers.PrimaryKey;
 
 
-/**
- * Dimension Table is a special type of OFFLINE table which is assigned to all servers
- * in a tenant and is used to execute a LOOKUP Transform Function. DimensionTableDataManager
- * loads the contents into a HashMap for faster access thus the size should be small
- * enough to easily fit in memory.
- *
- * DimensionTableDataManager uses Registry of Singletons pattern to store one instance per table
- * which can be accessed via {@link #getInstanceByTableName} static method.
- */
+/// Dimension Table is a special type of OFFLINE table which is assigned to all servers
+/// in a tenant and is used to execute a LOOKUP Transform Function. DimensionTableDataManager
+/// loads the contents into a HashMap for faster access thus the size should be small
+/// enough to easily fit in memory.
+///
+/// DimensionTableDataManager uses Registry of Singletons pattern to store one instance per table
+/// which can be accessed via [#getInstanceByTableName] static method.
 @ThreadSafe
 public class DimensionTableDataManager extends OfflineTableDataManager {
 
@@ -76,13 +73,12 @@ public class DimensionTableDataManager extends OfflineTableDataManager {
     }
   };
 
-  private DimensionTableDataManager() {
+  protected DimensionTableDataManager() {
   }
 
-  /**
-   * `createInstanceByTableName` should only be used by the {@link TableDataManagerProvider} and the returned
-   * instance should be properly initialized via {@link #init} method before using.
-   */
+  /// `createInstanceByTableName` should only be used by the
+  /// [org.apache.pinot.core.data.manager.provider.TableDataManagerProvider] and the returned instance should
+  /// be properly initialized via [#init] method before using.
   public static DimensionTableDataManager createInstanceByTableName(String tableNameWithType) {
     return INSTANCES.computeIfAbsent(tableNameWithType, k -> new DimensionTableDataManager());
   }
@@ -103,7 +99,7 @@ public class DimensionTableDataManager extends OfflineTableDataManager {
   // anyway
   private final AtomicInteger _loadToken = new AtomicInteger();
 
-  private boolean _disablePreload = false;
+  private boolean _disablePreload;
   private boolean _errorOnDuplicatePrimaryKey = false;
 
   @Override
@@ -118,6 +114,7 @@ public class DimensionTableDataManager extends OfflineTableDataManager {
     Preconditions.checkState(CollectionUtils.isNotEmpty(primaryKeyColumns),
         "Primary key columns must be configured for dimension table: %s", _tableNameWithType);
 
+    _disablePreload = getInstanceDataManagerConfig().isDimensionTablePreloadDisabled();
     DimensionTableConfig dimensionTableConfig = tableConfig.getDimensionTableConfig();
     if (dimensionTableConfig != null) {
       _disablePreload = dimensionTableConfig.isDisablePreload();
@@ -129,8 +126,8 @@ public class DimensionTableDataManager extends OfflineTableDataManager {
       lookupTable.defaultReturnValue(Long.MIN_VALUE);
 
       _dimensionTable.set(
-          new MemoryOptimizedDimensionTable(schema, primaryKeyColumns, lookupTable, Collections.emptyList(),
-              Collections.emptyList(), this));
+          new MemoryOptimizedDimensionTable(schema, primaryKeyColumns, lookupTable, List.of(),
+              List.of(), this));
     } else {
       List<String> valueColumns = getValueColumns(schema.getColumnNames(), primaryKeyColumns);
 
@@ -186,9 +183,7 @@ public class DimensionTableDataManager extends OfflineTableDataManager {
     }
   }
 
-  /**
-   * `loadLookupTable()` reads contents of the DimensionTable into _lookupTable HashMap for fast lookup.
-   */
+  /// `loadLookupTable()` reads contents of the DimensionTable into \_lookupTable HashMap for fast lookup.
   private boolean loadLookupTable() {
     DimensionTable dimensionTable =
         _disablePreload ? createMemOptimisedDimensionTable() : createFastLookupDimensionTable();
@@ -212,6 +207,9 @@ public class DimensionTableDataManager extends OfflineTableDataManager {
         "Primary key columns must be configured for dimension table: %s", _tableNameWithType);
 
     List<SegmentDataManager> segmentDataManagers = acquireAllSegments();
+    if (!_errorOnDuplicatePrimaryKey) {
+      sortSegmentsForUpsert(segmentDataManagers);
+    }
     try {
       // count all documents to limit map re-sizings
       int totalDocs = 0;
@@ -248,7 +246,7 @@ public class DimensionTableDataManager extends OfflineTableDataManager {
               if (_errorOnDuplicatePrimaryKey && previousValue != null) {
                 throw new IllegalStateException(
                     "Caught exception while reading records from segment: " + indexSegment.getSegmentName()
-                        + "primary key already exist for: " + Arrays.toString(primaryKey));
+                        + " primary key already exists for: " + Arrays.toString(primaryKey));
               }
             }
           } catch (Exception e) {
@@ -287,6 +285,9 @@ public class DimensionTableDataManager extends OfflineTableDataManager {
         "Primary key columns must be configured for dimension table: %s", _tableNameWithType);
 
     List<SegmentDataManager> segmentDataManagers = acquireAllSegments();
+    if (!_errorOnDuplicatePrimaryKey) {
+      sortSegmentsForUpsert(segmentDataManagers);
+    }
     List<PinotSegmentRecordReader> recordReaders = new ArrayList<>(segmentDataManagers.size());
 
     int totalDocs = 0;
@@ -319,7 +320,12 @@ public class DimensionTableDataManager extends OfflineTableDataManager {
             Object[] primaryKey = recordReader.getRecordValues(i, pkIndexes);
 
             long readerIdxAndDocId = (((long) readerIdx) << 32) | (i & 0xffffffffL);
-            lookupTable.put(primaryKey, readerIdxAndDocId);
+            long previousValue = lookupTable.put(primaryKey, readerIdxAndDocId);
+            if (_errorOnDuplicatePrimaryKey && previousValue != Long.MIN_VALUE) {
+              throw new IllegalStateException(
+                  "Caught exception while reading records from segment: " + indexSegment.getSegmentName()
+                      + " primary key already exists for: " + Arrays.toString(primaryKey));
+            }
           }
         } catch (Exception e) {
           throw new RuntimeException(
@@ -329,6 +335,13 @@ public class DimensionTableDataManager extends OfflineTableDataManager {
     }
     return new MemoryOptimizedDimensionTable(schema, primaryKeyColumns, lookupTable, segmentDataManagers, recordReaders,
         this);
+  }
+
+  private void sortSegmentsForUpsert(List<SegmentDataManager> segmentDataManagers) {
+    segmentDataManagers.sort(Comparator
+        .comparingLong((SegmentDataManager segmentDataManager) -> segmentDataManager.getSegment().getSegmentMetadata()
+            .getIndexCreationTime())
+        .thenComparing(segmentDataManager -> segmentDataManager.getSegment().getSegmentName()));
   }
 
   private void releaseResources(List<PinotSegmentRecordReader> recordReaders,

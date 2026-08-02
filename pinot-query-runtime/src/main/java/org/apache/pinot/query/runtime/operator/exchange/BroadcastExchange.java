@@ -18,18 +18,14 @@
  */
 package org.apache.pinot.query.runtime.operator.exchange;
 
-import java.io.IOException;
 import java.util.List;
-import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
 import org.apache.pinot.query.mailbox.SendingMailbox;
 import org.apache.pinot.query.runtime.blocks.BlockSplitter;
 import org.apache.pinot.query.runtime.blocks.MseBlock;
 
 
-/**
- * Broadcast blocks to all receiving servers.
- */
+/// Broadcast blocks to all receiving servers.
 class BroadcastExchange extends BlockExchange {
 
   protected BroadcastExchange(List<SendingMailbox> sendingMailboxes, BlockSplitter splitter) {
@@ -42,8 +38,7 @@ class BroadcastExchange extends BlockExchange {
   }
 
   @Override
-  protected void route(List<SendingMailbox> destinations, MseBlock.Data block)
-      throws IOException, TimeoutException {
+  protected void route(List<SendingMailbox> destinations, MseBlock.Data block) {
     for (SendingMailbox mailbox : destinations) {
       sendBlock(mailbox, block);
     }

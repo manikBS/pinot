@@ -31,10 +31,8 @@ import org.apache.calcite.rel.RelWriter;
 import org.apache.calcite.rel.core.Exchange;
 
 
-/**
- * Pinot's implementation of {@link Exchange} which needs information about whether to exchange is
- * done on a streaming or a pipeline-breaking fashion.
- */
+/// Pinot's implementation of [Exchange] which needs information about whether to exchange is
+/// done on a streaming or a pipeline-breaking fashion.
 public class PinotLogicalExchange extends Exchange {
   private final PinotRelExchangeType _exchangeType;
 
@@ -72,7 +70,12 @@ public class PinotLogicalExchange extends Exchange {
 
   public static PinotLogicalExchange create(RelNode input, RelDistribution distribution,
       PinotRelExchangeType exchangeType) {
-    return create(input, distribution, exchangeType, distribution.getKeys(), null);
+    return create(input, distribution, exchangeType, null);
+  }
+
+  public static PinotLogicalExchange create(RelNode input, RelDistribution distribution,
+      PinotRelExchangeType exchangeType, @Nullable Boolean prePartitioned) {
+    return create(input, distribution, exchangeType, distribution.getKeys(), prePartitioned);
   }
 
   public static PinotLogicalExchange create(RelNode input, RelDistribution distribution,

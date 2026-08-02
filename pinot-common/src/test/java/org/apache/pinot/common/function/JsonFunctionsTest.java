@@ -19,14 +19,18 @@
 package org.apache.pinot.common.function;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.jayway.jsonpath.InvalidJsonException;
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import org.apache.pinot.common.function.scalar.JsonFunctions;
 import org.apache.pinot.spi.utils.JsonUtils;
 import org.testng.Assert;
@@ -36,6 +40,7 @@ import org.testng.annotations.Test;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNull;
+import static org.testng.Assert.assertSame;
 import static org.testng.Assert.assertTrue;
 
 
@@ -158,6 +163,88 @@ public class JsonFunctionsTest {
     assertEquals(JsonFunctions.jsonPathString("{\"foo\": \"null\"}", "$.foo", "default"), "null");
   }
 
+  /// The default-value `jsonPath*` overloads return the caller's default for input that cannot begin a JSON
+  /// value (plain text, null, empty) without invoking the parser - this avoids the `fillInStackTrace()` cost
+  /// of a thrown-and-caught [InvalidJsonException] on the ingestion hot path. Behavior is unchanged for valid
+  /// JSON and for any input that could begin a JSON value (which is still handed to the parser).
+  @Test
+  public void testJsonPathDefaultVariantsSkipNonJson() {
+    // Plain-text input (e.g. a raw log line) -> default, no exception thrown.
+    assertEquals(JsonFunctions.jsonPathString("INFO 2026-06-08 request done", "$.level", "def"), "def");
+    assertEquals(JsonFunctions.jsonPathString("INFO 2026-06-08 request done", "$", "def"), "def");
+    assertEquals(JsonFunctions.jsonPathLong("ERROR boom code", "$.code", -1L), -1L);
+    assertEquals(JsonFunctions.jsonPathDouble("WARN slow request", "$.latency", -1.0), -1.0, 0.0);
+    assertEquals(JsonFunctions.jsonPathArrayDefaultEmpty("plain text line", "$.items").length, 0);
+
+    // null input -> default.
+    assertEquals(JsonFunctions.jsonPathString(null, "$.level", "def"), "def");
+    assertEquals(JsonFunctions.jsonPathLong(null, "$.code", -1L), -1L);
+    assertEquals(JsonFunctions.jsonPathArrayDefaultEmpty(null, "$.items").length, 0);
+
+    // Empty / whitespace-only input -> default.
+    assertEquals(JsonFunctions.jsonPathString("", "$.x", "def"), "def");
+    assertEquals(JsonFunctions.jsonPathString("   ", "$.x", "def"), "def");
+
+    // Valid JSON object/array is still extracted, including with leading whitespace.
+    assertEquals(JsonFunctions.jsonPathString("{\"level\":\"info\"}", "$.level", "def"), "info");
+    assertEquals(JsonFunctions.jsonPathString("  \n {\"level\":\"info\"}", "$.level", "def"), "info");
+    assertEquals(JsonFunctions.jsonPathString("[{\"k\":\"v\"}]", "$[0].k", "def"), "v");
+
+    // Inputs that could begin a JSON value are still handed to the parser, so behavior is unchanged:
+    // "not json" begins with 'n' (the `null` literal) -> parsed, fails, default returned.
+    assertEquals(JsonFunctions.jsonPathString("not json", "$.x", "def"), "def");
+    // Bare JSON scalars are parsed and returned for the whole-document path (preserved behavior).
+    assertEquals(JsonFunctions.jsonPathString("12345", "$", "def"), "12345");
+    assertEquals(JsonFunctions.jsonPathString("\"hello\"", "$", "def"), "hello");
+
+    // Inputs the fast-path skips that the parser also rejected before -> default (equivalence preserved at the
+    // exact char boundary: these do not begin with {, [, ", -, a digit, or a true/false/null literal).
+    assertEquals(JsonFunctions.jsonPathString("+5", "$", "def"), "def");
+    assertEquals(JsonFunctions.jsonPathString(".5", "$", "def"), "def");
+    assertEquals(JsonFunctions.jsonPathString("NaN", "$", "def"), "def");
+    assertEquals(JsonFunctions.jsonPathString("Infinity", "$", "def"), "def");
+    assertEquals(JsonFunctions.jsonPathString("'single quoted'", "$.x", "def"), "def");
+  }
+
+  /// `jsonExtractObject` parses a JSON document once into a reusable Map/List (or passes through an
+  /// already-parsed container), returns null without throwing for null/scalar/non-JSON input, and the returned object
+  /// is navigable by `jsonPath*` with results identical to parsing the raw string - enabling parse-once
+  /// transform configs.
+  @Test
+  public void testJsonExtractObject()
+      throws Exception {
+    // JSON object -> reusable Map, navigable by jsonPath without re-parsing.
+    Object obj = JsonFunctions.jsonExtractObject("{\"level\":\"info\",\"log\":{\"msg\":\"hi\"}}");
+    assertTrue(obj instanceof Map);
+    assertEquals(JsonFunctions.jsonPathString(obj, "$.log.msg", "def"), "hi");
+    assertEquals(JsonFunctions.jsonPathString(obj, "$.level", "def"), "info");
+
+    // JSON array -> reusable List.
+    Object arr = JsonFunctions.jsonExtractObject("[{\"k\":\"v\"}]");
+    assertTrue(arr instanceof List);
+    assertEquals(JsonFunctions.jsonPathString(arr, "$[0].k", "def"), "v");
+
+    // null / scalar / plain-text / empty -> null, no exception.
+    assertNull(JsonFunctions.jsonExtractObject(null));
+    assertNull(JsonFunctions.jsonExtractObject("INFO 2026-06-08 plain text log line"));
+    assertNull(JsonFunctions.jsonExtractObject("12345"));
+    assertNull(JsonFunctions.jsonExtractObject(""));
+
+    // Already-parsed container -> passed through unchanged (Map and Object[]), still navigable by jsonPath.
+    Map<String, Object> map = Map.of("a", "b");
+    assertEquals(JsonFunctions.jsonExtractObject(map), map);
+    Object[] preParsed = new Object[]{Map.of("k", "v")};
+    assertSame(JsonFunctions.jsonExtractObject(preParsed), preParsed);
+    assertEquals(JsonFunctions.jsonPathString(preParsed, "$[0].k", "def"), "v");
+
+    // Parse-once equivalence: extracting through the parsed object matches extracting from the raw string.
+    String json = "{\"labels\":{\"service_name\":\"svc-1\",\"environment\":\"prod\"},\"id\":\"abc\"}";
+    Object parsed = JsonFunctions.jsonExtractObject(json);
+    assertEquals(JsonFunctions.jsonPathString(parsed, "$.labels.service_name", "def"),
+        JsonFunctions.jsonPathString(json, "$.labels.service_name", "def"));
+    assertEquals(JsonFunctions.jsonPathString(parsed, "$.id", "def"), "abc");
+  }
+
   @Test
   public void testJsonFunctionExtractingArray()
       throws JsonProcessingException {
@@ -242,16 +329,16 @@ public class JsonFunctionsTest {
     // Object[] doesn't work with default JsonPath, where "$.commits[*].sha" would return empty,
     // and "$.commits[1].sha" led to exception `Filter: [1]['sha'] can only be applied to arrays`.
     // Those failure could be reproduced by using the default JacksonJsonProvider for JsonPath.
-    Map<String, Object> rawData = ImmutableMap.of("commits",
-        ImmutableList.of(ImmutableMap.of("sha", 123, "name", "k"), ImmutableMap.of("sha", 456, "name", "j")));
+    Map<String, Object> rawData = Map.of("commits",
+        List.of(Map.of("sha", 123, "name", "k"), Map.of("sha", 456, "name", "j")));
     assertTrue(JsonFunctions.jsonPathExists(rawData, "$.commits[*].sha"));
     assertEquals(JsonFunctions.jsonPathArray(rawData, "$.commits[*].sha"), new Integer[]{123, 456});
     assertTrue(JsonFunctions.jsonPathExists(rawData, "$.commits[1].sha"));
     assertEquals(JsonFunctions.jsonPathArray(rawData, "$.commits[1].sha"), new Integer[]{456});
 
     // ArrayAwareJacksonJsonProvider should fix this issue.
-    rawData = ImmutableMap.of("commits",
-        new Object[]{ImmutableMap.of("sha", 123, "name", "k"), ImmutableMap.of("sha", 456, "name", "j")});
+    rawData = Map.of("commits",
+        new Object[]{Map.of("sha", 123, "name", "k"), Map.of("sha", 456, "name", "j")});
     assertEquals(JsonFunctions.jsonPathArray(rawData, "$.commits[*].sha"), new Integer[]{123, 456});
     assertEquals(JsonFunctions.jsonPathArray(rawData, "$.commits[1].sha"), new Integer[]{456});
   }
@@ -270,7 +357,7 @@ public class JsonFunctionsTest {
     // ArrayAwareJacksonJsonProvider can work with Array directly, thus no need to serialize
     // Object[] any more.
     Object[] rawDataInAry =
-        new Object[]{ImmutableMap.of("sha", 123, "name", "kk"), ImmutableMap.of("sha", 456, "name", "jj")};
+        new Object[]{Map.of("sha", 123, "name", "kk"), Map.of("sha", 456, "name", "jj")};
     assertEquals(JsonFunctions.jsonPathArray(rawDataInAry, "$.[*].sha"), new Integer[]{123, 456});
     assertEquals(JsonFunctions.jsonPathArray(rawDataInAry, "$.[1].sha"), new Integer[]{456});
   }
@@ -312,10 +399,10 @@ public class JsonFunctionsTest {
   public void testJsonFunctionOnList()
       throws JsonProcessingException {
     List<Map<String, Object>> rawData = new ArrayList<Map<String, Object>>();
-    rawData.add(ImmutableMap
-        .of("name", "maths", "grade", "A", "score", 90, "homework_grades", Arrays.asList(80, 85, 90, 95, 100)));
-    rawData.add(ImmutableMap
-        .of("name", "english", "grade", "B", "score", 50, "homework_grades", Arrays.asList(60, 65, 70, 85, 90)));
+    rawData.add(
+        Map.of("name", "maths", "grade", "A", "score", 90, "homework_grades", Arrays.asList(80, 85, 90, 95, 100)));
+    rawData.add(
+        Map.of("name", "english", "grade", "B", "score", 50, "homework_grades", Arrays.asList(60, 65, 70, 85, 90)));
     assertTrue(JsonFunctions.jsonPathExists(rawData, "$.[*].name"));
     assertEquals(JsonFunctions.jsonPathArray(rawData, "$.[*].name"), new String[]{"maths", "english"});
     assertTrue(JsonFunctions.jsonPathExists(rawData, "$.[*].grade"));
@@ -331,9 +418,9 @@ public class JsonFunctionsTest {
   public void testJsonFunctionOnObjectArray()
       throws JsonProcessingException {
     Object[] rawData = new Object[]{
-        ImmutableMap.of("name", "maths", "grade", "A", "score", 90, "homework_grades",
+        Map.of("name", "maths", "grade", "A", "score", 90, "homework_grades",
             Arrays.asList(80, 85, 90, 95, 100)),
-        ImmutableMap.of("name", "english", "grade", "B", "score", 50, "homework_grades",
+        Map.of("name", "english", "grade", "B", "score", 50, "homework_grades",
             Arrays.asList(60, 65, 70, 85, 90))
     };
     assertTrue(JsonFunctions.jsonPathExists(rawData, "$.[*].name"));
@@ -350,9 +437,9 @@ public class JsonFunctionsTest {
   @DataProvider
   public static Object[][] jsonPathStringTestCases() {
     return new Object[][]{
-        {ImmutableMap.of("foo", "x", "bar", ImmutableMap.of("foo", "y")), "$.foo", "x"},
-        {ImmutableMap.of("foo", "x", "bar", ImmutableMap.of("foo", "y")), "$.qux", null},
-        {ImmutableMap.of("foo", "x", "bar", ImmutableMap.of("foo", "y")), "$.bar", "{\"foo\":\"y\"}"},
+        {Map.of("foo", "x", "bar", Map.of("foo", "y")), "$.foo", "x"},
+        {Map.of("foo", "x", "bar", Map.of("foo", "y")), "$.qux", null},
+        {Map.of("foo", "x", "bar", Map.of("foo", "y")), "$.bar", "{\"foo\":\"y\"}"},
     };
   }
 
@@ -370,15 +457,93 @@ public class JsonFunctionsTest {
     assertEquals(value, expected);
   }
 
+  @Test
+  public void testJsonPathStringOnExtractedValues()
+      throws JsonProcessingException {
+    // A value resolved from an already-parsed record tree (not a JSON string) keeps its runtime Java type.
+    // UUID / LocalDate / LocalTime are non-JSON-native scalars a record extractor can materialize; they render
+    // as their natural unquoted string, never wrapped in JSON string quotes.
+    UUID uuid = UUID.fromString("657ae8f8-b702-3cf4-9a05-300348c1623e");
+    assertEquals(JsonFunctions.jsonPathString(Map.of("v", uuid), "$.v"), "657ae8f8-b702-3cf4-9a05-300348c1623e");
+    assertEquals(JsonFunctions.jsonPathString(Map.of("v", uuid), "$.v", "default"),
+        "657ae8f8-b702-3cf4-9a05-300348c1623e");
+    assertEquals(JsonFunctions.jsonPathString(Map.of("v", LocalDate.of(2026, 7, 20)), "$.v"), "2026-07-20");
+    assertEquals(JsonFunctions.jsonPathString(Map.of("v", LocalTime.of(19, 54, 37)), "$.v"), "19:54:37");
+
+    // The fast-path variants share the same rendering helper and must produce identical results.
+    assertEquals(JsonFunctions.jsonPathStringFast(Map.of("v", uuid), "$.v", "default"),
+        "657ae8f8-b702-3cf4-9a05-300348c1623e");
+    assertEquals(JsonFunctions.jsonPathStringFirstMatch(Map.of("v", LocalDate.of(2026, 7, 20)), "$.v", "default"),
+        "2026-07-20");
+
+    // Numbers, Boolean, and Map / List / Set containers follow the json-path-to-string behavior of
+    // jsonExtractScalar (i.e. JsonUtils.objectToString), so a scalar number is unquoted and a container is JSON.
+    assertEquals(JsonFunctions.jsonPathString(Map.of("v", 42), "$.v"), "42");
+    assertEquals(JsonFunctions.jsonPathString(Map.of("v", 1.5d), "$.v"), "1.5");
+    assertEquals(JsonFunctions.jsonPathString(Map.of("v", new BigDecimal("123.45")), "$.v"), "123.45");
+    assertEquals(JsonFunctions.jsonPathString(Map.of("v", true), "$.v"), "true");
+    assertEquals(JsonFunctions.jsonPathString(Map.of("v", Map.of("k", "w")), "$.v"), "{\"k\":\"w\"}");
+    assertEquals(JsonFunctions.jsonPathString(Map.of("v", List.of(1, 2, 3)), "$.v"), "[1,2,3]");
+    assertEquals(JsonFunctions.jsonPathString(Map.of("v", Set.of("x")), "$.v"), "[\"x\"]");
+
+    // Timestamp follows objectToString (portable epoch millis), not its timezone-dependent JDBC toString form.
+    Timestamp timestamp = new Timestamp(1000L);
+    assertEquals(JsonFunctions.jsonPathString(Map.of("v", timestamp), "$.v"), JsonUtils.objectToString(timestamp));
+  }
+
+  @Test
+  public void testJsonPathLongOnExtractedValues() {
+    // Boolean is JSON-native and follows the numeric convention of jsonExtractScalar: true -> 1, false -> 0.
+    assertEquals(JsonFunctions.jsonPathLong("{\"v\":true}", "$.v"), 1L);
+    assertEquals(JsonFunctions.jsonPathLong(Map.of("v", false), "$.v"), 0L);
+
+    // A value resolved from an already-parsed record tree (not a JSON string) keeps its runtime Java type.
+    // Timestamp / LocalDate / LocalTime are non-JSON-native scalars a record extractor can materialize; they
+    // convert to their Pinot internal numeric form - epoch millis, days since epoch, millis since midnight.
+    assertEquals(JsonFunctions.jsonPathLong(Map.of("v", new Timestamp(1000L)), "$.v"), 1000L);
+    assertEquals(JsonFunctions.jsonPathLong(Map.of("v", LocalDate.of(2026, 7, 20)), "$.v"), 20654L);
+    assertEquals(JsonFunctions.jsonPathLong(Map.of("v", LocalTime.of(19, 54, 37)), "$.v"), 71677000L);
+
+    // The fast-path variants share the same conversion helper and must produce identical results.
+    assertEquals(JsonFunctions.jsonPathLongFast(Map.of("v", new Timestamp(1000L)), "$.v", -1L), 1000L);
+    assertEquals(JsonFunctions.jsonPathLongFirstMatch(Map.of("v", true), "$.v", -1L), 1L);
+
+    // Every Number narrows through longValue, and a value with no numeric meaning yields the default.
+    assertEquals(JsonFunctions.jsonPathLong(Map.of("v", new BigDecimal("123.45")), "$.v"), 123L);
+    assertEquals(JsonFunctions.jsonPathLong(Map.of("v", UUID.randomUUID()), "$.v", -1L), -1L);
+    assertEquals(JsonFunctions.jsonPathLong(Map.of("v", Map.of("k", "w")), "$.v", -1L), -1L);
+  }
+
+  @Test
+  public void testJsonPathDoubleOnExtractedValues() {
+    // Boolean is JSON-native and follows the numeric convention of jsonExtractScalar: true -> 1, false -> 0.
+    assertEquals(JsonFunctions.jsonPathDouble("{\"v\":true}", "$.v"), 1d);
+    assertEquals(JsonFunctions.jsonPathDouble(Map.of("v", false), "$.v"), 0d);
+
+    // Timestamp / LocalDate / LocalTime convert to the same internal numeric form as jsonPathLong.
+    assertEquals(JsonFunctions.jsonPathDouble(Map.of("v", new Timestamp(1000L)), "$.v"), 1000d);
+    assertEquals(JsonFunctions.jsonPathDouble(Map.of("v", LocalDate.of(2026, 7, 20)), "$.v"), 20654d);
+    assertEquals(JsonFunctions.jsonPathDouble(Map.of("v", LocalTime.of(19, 54, 37)), "$.v"), 71677000d);
+
+    // The fast-path variants share the same conversion helper and must produce identical results.
+    assertEquals(JsonFunctions.jsonPathDoubleFast(Map.of("v", new Timestamp(1000L)), "$.v", -1d), 1000d);
+    assertEquals(JsonFunctions.jsonPathDoubleFirstMatch(Map.of("v", true), "$.v", -1d), 1d);
+
+    // Every Number widens through doubleValue, and a value with no numeric meaning yields the default.
+    assertEquals(JsonFunctions.jsonPathDouble(Map.of("v", new BigDecimal("123.45")), "$.v"), 123.45d);
+    assertEquals(JsonFunctions.jsonPathDouble(Map.of("v", UUID.randomUUID()), "$.v", -1d), -1d);
+    assertEquals(JsonFunctions.jsonPathDouble(Map.of("v", Map.of("k", "w")), "$.v", -1d), -1d);
+  }
+
   @DataProvider
   public static Object[][] jsonPathArrayTestCases() {
     return new Object[][]{
-        {ImmutableMap.of("foo", "x", "bar", ImmutableMap.of("foo", "y")), "$.foo", new Object[]{"x"}},
-        {ImmutableMap.of("foo", "x", "bar", ImmutableMap.of("foo", "y")), "$.qux", null},
+        {Map.of("foo", "x", "bar", Map.of("foo", "y")), "$.foo", new Object[]{"x"}},
+        {Map.of("foo", "x", "bar", Map.of("foo", "y")), "$.qux", null},
         {
-            ImmutableMap.of("foo", "x", "bar", ImmutableMap.of("foo", "y")), "$.bar", new Object[]{
-            ImmutableMap.of("foo", "y")
-        }
+            Map.of("foo", "x", "bar", Map.of("foo", "y")), "$.bar", new Object[]{
+            Map.of("foo", "y")
+            }
         },
     };
   }
@@ -412,7 +577,7 @@ public class JsonFunctionsTest {
         + "{\"key\": \"k4\", \"value\": \"v4\"}, "
         + "{\"key\": \"k5\", \"value\": \"v5\"}"
         + "]";
-    Map<String, Object> expected = ImmutableMap.of("k1", "v1", "k2", "v2", "k3", "v3", "k4", "v4", "k5", "v5");
+    Map<String, Object> expected = Map.of("k1", "v1", "k2", "v2", "k3", "v3", "k4", "v4", "k5", "v5");
     assertEquals(JsonFunctions.jsonKeyValueArrayToMap(jsonString), expected);
 
     Object[] jsonArray = new Object[]{
@@ -424,7 +589,7 @@ public class JsonFunctionsTest {
     };
     assertEquals(JsonFunctions.jsonKeyValueArrayToMap(jsonArray), expected);
 
-    List<Object> jsonList = ImmutableList.of(
+    List<Object> jsonList = List.of(
         "{\"key\": \"k1\", \"value\": \"v1\"}",
         "{\"key\": \"k2\", \"value\": \"v2\"}",
         "{\"key\": \"k3\", \"value\": \"v3\"}",
@@ -510,7 +675,7 @@ public class JsonFunctionsTest {
     System.out.println("Map result: " + mapResult);
     Assert.assertTrue(mapResult.size() > 0);
 
-    List<Object> listObj = new java.util.ArrayList<>();
+    List<Object> listObj = new ArrayList<>();
     listObj.add(Map.of("key1", "value1"));
     listObj.add(Map.of("key2", "value2"));
     List<String> listResult = JsonFunctions.jsonExtractKey(listObj, "$..**", "maxDepth=2");

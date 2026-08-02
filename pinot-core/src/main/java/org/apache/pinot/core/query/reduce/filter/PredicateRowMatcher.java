@@ -27,9 +27,7 @@ import org.apache.pinot.core.operator.filter.predicate.PredicateEvaluatorProvide
 import org.apache.pinot.spi.data.FieldSpec.DataType;
 
 
-/**
- * Predicate matcher.
- */
+/// Predicate matcher.
 public class PredicateRowMatcher implements RowMatcher {
   private final ValueExtractor _valueExtractor;
   private final DataType _valueType;
@@ -44,7 +42,7 @@ public class PredicateRowMatcher implements RowMatcher {
     if (_predicateType == Predicate.Type.IS_NULL || _predicateType == Predicate.Type.IS_NOT_NULL) {
       _predicateEvaluator = null;
     } else {
-      _predicateEvaluator = PredicateEvaluatorProvider.getPredicateEvaluator(predicate, null, _valueType);
+      _predicateEvaluator = PredicateEvaluatorProvider.getPredicateEvaluator(predicate, null, _valueType, null);
     }
     _nullHandlingEnabled = nullHandlingEnabled;
   }

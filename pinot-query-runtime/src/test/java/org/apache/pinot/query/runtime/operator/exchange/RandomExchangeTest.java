@@ -18,8 +18,7 @@
  */
 package org.apache.pinot.query.runtime.operator.exchange;
 
-import com.google.common.collect.ImmutableList;
-import java.util.Collections;
+import java.util.List;
 import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.query.mailbox.SendingMailbox;
 import org.apache.pinot.query.runtime.blocks.BlockSplitter;
@@ -47,7 +46,7 @@ public class RandomExchangeTest {
   @BeforeMethod
   public void setUp() {
     _mocks = MockitoAnnotations.openMocks(this);
-    _block = new RowHeapDataBlock(Collections.emptyList(), DataSchema.EXPLAIN_RESULT_SCHEMA);
+    _block = new RowHeapDataBlock(List.of(), DataSchema.EXPLAIN_RESULT_SCHEMA);
   }
 
   @AfterMethod
@@ -60,7 +59,7 @@ public class RandomExchangeTest {
   public void shouldRouteRandomly()
       throws Exception {
     // Given:
-    ImmutableList<SendingMailbox> destinations = ImmutableList.of(_mailbox1, _mailbox2);
+    List<SendingMailbox> destinations = List.of(_mailbox1, _mailbox2);
 
     // When:
     new RandomExchange(destinations, size -> 1, BlockSplitter.NO_OP).route(destinations, _block);

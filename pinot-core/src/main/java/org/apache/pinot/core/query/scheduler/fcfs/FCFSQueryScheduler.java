@@ -20,31 +20,25 @@ package org.apache.pinot.core.query.scheduler.fcfs;
 
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListenableFutureTask;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.LongAccumulator;
-import org.apache.pinot.common.metrics.ServerMetrics;
 import org.apache.pinot.common.metrics.ServerQueryPhase;
 import org.apache.pinot.core.query.executor.QueryExecutor;
 import org.apache.pinot.core.query.request.ServerQueryRequest;
 import org.apache.pinot.core.query.scheduler.QueryScheduler;
 import org.apache.pinot.core.query.scheduler.resources.QueryExecutorService;
 import org.apache.pinot.core.query.scheduler.resources.UnboundedResourceManager;
-import org.apache.pinot.spi.accounting.ThreadResourceUsageAccountant;
+import org.apache.pinot.spi.accounting.ThreadAccountant;
 import org.apache.pinot.spi.env.PinotConfiguration;
-import org.apache.pinot.spi.query.QueryThreadContext;
 
 
-/**
- * First Come First Served(FCFS) query scheduler. The FCFS policy applies across all tables.
- * This implementation does not throttle resource utilization. That makes it unsafe in
- * the multi-tenant clusters.
- */
+/// First Come First Served(FCFS) query scheduler. The FCFS policy applies across all tables.
+/// This implementation does not throttle resource utilization. That makes it unsafe in
+/// the multi-tenant clusters.
 public class FCFSQueryScheduler extends QueryScheduler {
 
-  public FCFSQueryScheduler(PinotConfiguration config, QueryExecutor queryExecutor, ServerMetrics serverMetrics,
-      LongAccumulator latestQueryTime, ThreadResourceUsageAccountant resourceUsageAccountant) {
-    super(config, queryExecutor, new UnboundedResourceManager(config, resourceUsageAccountant), serverMetrics,
-        latestQueryTime);
+  public FCFSQueryScheduler(PinotConfiguration config, String instanceId, QueryExecutor queryExecutor,
+      ThreadAccountant threadAccountant, LongAccumulator latestQueryTime) {
+    super(config, instanceId, queryExecutor, threadAccountant, latestQueryTime, new UnboundedResourceManager(config));
   }
 
   @Override
@@ -53,9 +47,8 @@ public class FCFSQueryScheduler extends QueryScheduler {
       return shuttingDown(queryRequest);
     }
     queryRequest.getTimerContext().startNewPhaseTimer(ServerQueryPhase.SCHEDULER_WAIT);
-    QueryExecutorService queryExecutorService = _resourceManager.getExecutorService(queryRequest, null);
-    ExecutorService innerExecutorService = QueryThreadContext.contextAwareExecutorService(queryExecutorService);
-    ListenableFutureTask<byte[]> queryTask = createQueryFutureTask(queryRequest, innerExecutorService);
+    QueryExecutorService executorService = _resourceManager.getExecutorService(queryRequest, null);
+    ListenableFutureTask<byte[]> queryTask = createQueryFutureTask(queryRequest, executorService);
     _resourceManager.getQueryRunners().submit(queryTask);
     return queryTask;
   }

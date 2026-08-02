@@ -18,28 +18,29 @@
  */
 package org.apache.pinot.common.function.scalar;
 
-import javax.annotation.Nullable;
+import org.apache.pinot.spi.annotations.FunctionVolatility;
 import org.apache.pinot.spi.annotations.ScalarFunction;
 import org.apache.pinot.spi.query.QueryThreadContext;
 
 
+@ScalarFunction(enabled = false, volatility = FunctionVolatility.STABLE)
 public class InternalFunctions {
   private InternalFunctions() {
   }
 
-  /// Returns the [correlation id][QueryThreadContext#getCid] of the query.
+  /// Returns the correlation id of the query.
   ///
   /// The input value is not directly used. Instead it is here to control whether the function is called during query
   /// optimization or execution. In order to do the latter, a non-constant value (like a column) should be passed as
   /// input.
   ///
   /// This is mostly useful for test and internal usage
-  @ScalarFunction
+  @ScalarFunction(volatility = FunctionVolatility.VOLATILE)
   public static String cid(String input) {
-    return QueryThreadContext.getCid();
+    return QueryThreadContext.get().getExecutionContext().getCid();
   }
 
-  /// Returns the [request id][QueryThreadContext#getRequestId] of the query.
+  /// Returns the request id of the query.
   ///
   /// The input value is not directly used. Instead it is here to control whether the function is called during query
   /// optimization or execution. In order to do the latter, a non-constant value (like a column) should be passed as
@@ -48,34 +49,34 @@ public class InternalFunctions {
   /// This is mostly useful for test and internal usage
   @ScalarFunction
   public static long reqId(String input) {
-    return QueryThreadContext.getRequestId();
+    return QueryThreadContext.get().getExecutionContext().getRequestId();
   }
 
-  /// Returns the [start time][QueryThreadContext#getStartTimeMs] of the query.
+  /// Returns the start time of the query.
   ///
   /// The input value is not directly used. Instead it is here to control whether the function is called during query
   /// optimization or execution. In order to do the latter, a non-constant value (like a column) should be passed as
   /// input.
   ///
   /// This is mostly useful for test and internal usage and should be close to now()
-  @ScalarFunction
+  @ScalarFunction(volatility = FunctionVolatility.VOLATILE)
   public static long startTime(String input) {
-    return QueryThreadContext.getStartTimeMs();
+    return QueryThreadContext.get().getExecutionContext().getStartTimeMs();
   }
 
-  /// Returns the [deadline][QueryThreadContext#getActiveDeadlineMs()] of the query.
+  /// Returns the deadline of the query.
   ///
   /// The input value is not directly used. Instead it is here to control whether the function is called during query
   /// optimization or execution. In order to do the latter, a non-constant value (like a column) should be passed as
   /// input.
   ///
   /// This is mostly useful for test and internal usage
-  @ScalarFunction
+  @ScalarFunction(volatility = FunctionVolatility.VOLATILE)
   public static long endTime(String input) {
-    return QueryThreadContext.getActiveDeadlineMs();
+    return QueryThreadContext.get().getExecutionContext().getActiveDeadlineMs();
   }
 
-  ///  Returns the [broker id][QueryThreadContext#getBrokerId] of the query.
+  ///  Returns the broker id of the query.
   ///
   /// The input value is not directly used. Instead it is here to control whether the function is called during query
   /// optimization or execution. In order to do the latter, a non-constant value (like a column) should be passed as
@@ -83,17 +84,43 @@ public class InternalFunctions {
   ///
   /// This is mostly useful for test and internal usage
   @ScalarFunction
-  @Nullable
   public static String brokerId(String input) {
-    return QueryThreadContext.getBrokerId();
+    return QueryThreadContext.get().getExecutionContext().getBrokerId();
   }
 
-  /// Returns the [query engine][QueryThreadContext#getQueryEngine] of the query.
+  /// Returns the query engine of the query.
   ///
   /// This is mostly useful for test and internal usage
   @ScalarFunction
-  @Nullable
   public static String queryEngine(String input) {
-    return QueryThreadContext.getQueryEngine();
+    return QueryThreadContext.get().getExecutionContext().getQueryType().name();
+  }
+
+  /// Returns the stage id of the query or -1 if the MSE worker context is not available, which is normal in SSE queries
+  /// or when the expression is executed in the broker (ie during simplification).
+  ///
+  /// The input value is not directly used. Instead it is here to control whether the function is called during query
+  /// optimization or execution. In order to do the latter, a non-constant value (like a column) should be passed as
+  /// input.
+  ///
+  /// This is mostly useful for test and internal usage
+  @ScalarFunction(volatility = FunctionVolatility.VOLATILE)
+  public static int stageId(String input) {
+    QueryThreadContext.MseWorkerInfo mseWorkerInfo = QueryThreadContext.get().getMseWorkerInfo();
+    return mseWorkerInfo != null ? mseWorkerInfo.getStageId() : -1;
+  }
+
+  /// Returns the worker id of the query or -1 if the MSE worker context is not available, which is normal in SSE
+  /// queries or when the expression is executed in the broker (ie during simplification).
+  ///
+  /// The input value is not directly used. Instead it is here to control whether the function is called during query
+  /// optimization or execution. In order to do the latter, a non-constant value (like a column) should be passed as
+  /// input.
+  ///
+  /// This is mostly useful for test and internal usage
+  @ScalarFunction(volatility = FunctionVolatility.VOLATILE)
+  public static int workerId(String input) {
+    QueryThreadContext.MseWorkerInfo mseWorkerInfo = QueryThreadContext.get().getMseWorkerInfo();
+    return mseWorkerInfo != null ? mseWorkerInfo.getWorkerId() : -1;
   }
 }

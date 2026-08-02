@@ -18,27 +18,24 @@
  */
 package org.apache.pinot.core.operator;
 
-import java.util.Collections;
 import java.util.List;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.pinot.common.datatable.DataTable.MetadataKey;
+import org.apache.pinot.common.utils.config.QueryOptionsUtils;
 import org.apache.pinot.core.common.Operator;
 import org.apache.pinot.core.operator.blocks.InstanceResponseBlock;
 import org.apache.pinot.core.operator.blocks.results.BaseResultsBlock;
-import org.apache.pinot.core.operator.blocks.results.ExceptionResultsBlock;
 import org.apache.pinot.core.operator.combine.BaseCombineOperator;
 import org.apache.pinot.core.query.request.context.QueryContext;
 import org.apache.pinot.segment.spi.FetchContext;
 import org.apache.pinot.segment.spi.SegmentContext;
 import org.apache.pinot.spi.accounting.ThreadResourceSnapshot;
-import org.apache.pinot.spi.exception.EarlyTerminationException;
-import org.apache.pinot.spi.exception.QueryErrorCode;
-import org.apache.pinot.spi.exception.QueryErrorMessage;
-import org.apache.pinot.spi.trace.Tracing;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 public class InstanceResponseOperator extends BaseOperator<InstanceResponseBlock> {
   private static final String EXPLAIN_NAME = "INSTANCE_RESPONSE";
+  private static final Logger LOGGER = LoggerFactory.getLogger(InstanceResponseOperator.class);
 
   protected final BaseCombineOperator<?> _combineOperator;
   protected final List<SegmentContext> _segmentContexts;
@@ -84,10 +81,15 @@ public class InstanceResponseOperator extends BaseOperator<InstanceResponseBlock
     return Math.max(systemActivitiesCpuTimeNs, 0);
   }
 
+  /// Do not check termination in combine operator to ensure [#nextBlock()] returns a results block instead of
+  /// throwing exception.
+  @Override
+  protected void checkTermination() {
+  }
+
   @Override
   protected InstanceResponseBlock getNextBlock() {
-    BaseResultsBlock baseResultsBlock = getBaseBlock();
-    return buildInstanceResponseBlock(baseResultsBlock);
+    return buildInstanceResponseBlock(getBaseBlock());
   }
 
   protected InstanceResponseBlock buildInstanceResponseBlock(BaseResultsBlock baseResultsBlock) {
@@ -97,6 +99,13 @@ public class InstanceResponseOperator extends BaseOperator<InstanceResponseBlock
         String.valueOf(_threadMemAllocatedBytes));
     instanceResponseBlock.addMetadata(MetadataKey.SYSTEM_ACTIVITIES_CPU_TIME_NS.getName(),
         String.valueOf(_systemActivitiesCpuTimeNs));
+    Integer implicitLimit = QueryOptionsUtils.getLiteModeImplicitLeafStageLimit(
+        _queryContext.getQueryOptions());
+    // false-positive when table has exactly implicitLimit rows
+    if (implicitLimit != null && baseResultsBlock.getNumRows() >= implicitLimit) {
+      instanceResponseBlock.addMetadata(
+          MetadataKey.LITE_MODE_LEAF_STAGE_LIMIT_REACHED.getName(), "true");
+    }
     return instanceResponseBlock;
   }
 
@@ -127,16 +136,11 @@ public class InstanceResponseOperator extends BaseOperator<InstanceResponseBlock
             numServerThreads);
   }
 
-
   protected BaseResultsBlock getCombinedResults() {
     try {
       prefetchAll();
+      // Combine operator should never throw exception
       return _combineOperator.nextBlock();
-    } catch (EarlyTerminationException e) {
-      Exception killedErrorMsg = Tracing.getThreadAccountant().getErrorStatus();
-      QueryErrorMessage errMsg = QueryErrorMessage.safeMsg(QueryErrorCode.QUERY_CANCELLATION,
-          "Cancelled while combining results" + (killedErrorMsg == null ? StringUtils.EMPTY : " " + killedErrorMsg));
-      return new ExceptionResultsBlock(errMsg);
     } finally {
       releaseAll();
     }
@@ -161,6 +165,6 @@ public class InstanceResponseOperator extends BaseOperator<InstanceResponseBlock
 
   @Override
   public List<Operator> getChildOperators() {
-    return Collections.singletonList(_combineOperator);
+    return List.of(_combineOperator);
   }
 }

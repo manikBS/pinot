@@ -24,13 +24,12 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.pinot.common.auth.AuthProviderUtils;
 import org.apache.pinot.common.exception.HttpErrorStatusException;
-import org.apache.pinot.controller.helix.core.minion.generator.PinotTaskGenerator;
-import org.apache.pinot.minion.executor.PinotTaskExecutor;
 import org.apache.pinot.spi.env.PinotConfiguration;
 import org.apache.pinot.spi.utils.JsonUtils;
 import org.apache.pinot.tools.BootstrapTableTool;
@@ -44,10 +43,9 @@ import static org.apache.pinot.integration.tests.BasicAuthTestUtils.AUTH_HEADER_
 import static org.apache.pinot.integration.tests.BasicAuthTestUtils.AUTH_TOKEN;
 
 
-/**
- * Integration test that provides example of {@link PinotTaskGenerator} and {@link PinotTaskExecutor} and tests simple
- * minion functionality.
- */
+/// Integration test that provides example of
+/// [org.apache.pinot.controller.helix.core.minion.generator.PinotTaskGenerator] and
+/// [org.apache.pinot.minion.executor.PinotTaskExecutor] and tests simple minion functionality.
 public class BasicAuthBatchIntegrationTest extends ClusterTest {
   private static final String BOOTSTRAP_DATA_DIR = "/examples/batch/baseballStats";
   private static final String SCHEMA_FILE = "baseballStats_schema.json";
@@ -156,9 +154,9 @@ public class BasicAuthBatchIntegrationTest extends ClusterTest {
     FileUtils.copyURLToFile(getClass().getResource(BOOTSTRAP_DATA_DIR + "/" + JOB_FILE), jobFile);
 
     // patch ingestion job file
-    String jobFileContents = IOUtils.toString(new FileInputStream(jobFile));
+    String jobFileContents = IOUtils.toString(new FileInputStream(jobFile), StandardCharsets.UTF_8);
     IOUtils.write(jobFileContents.replaceAll("9000", String.valueOf(getControllerPort())),
-        new FileOutputStream(jobFile));
+        new FileOutputStream(jobFile), StandardCharsets.UTF_8);
 
     new BootstrapTableTool("http", "localhost", getControllerPort(), baseDir.getAbsolutePath(),
         AuthProviderUtils.makeAuthProvider(AUTH_TOKEN)).execute();

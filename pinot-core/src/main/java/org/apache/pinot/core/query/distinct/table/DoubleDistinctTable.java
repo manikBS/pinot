@@ -34,7 +34,7 @@ import org.apache.pinot.common.response.broker.ResultTable;
 import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.core.common.datatable.DataTableBuilder;
 import org.apache.pinot.core.common.datatable.DataTableBuilderFactory;
-import org.apache.pinot.spi.trace.Tracing;
+import org.apache.pinot.spi.query.QueryThreadContext;
 import org.apache.pinot.spi.utils.CommonConstants;
 import org.roaringbitmap.RoaringBitmap;
 
@@ -45,9 +45,7 @@ public class DoubleDistinctTable extends DistinctTable {
 
   private DoubleHeapPriorityQueue _priorityQueue;
 
-  /**
-   * Constructor for distinct table without data table (on the server side).
-   */
+  /// Constructor for distinct table without data table (on the server side).
   public DoubleDistinctTable(DataSchema dataSchema, int limit, boolean nullHandlingEnabled,
       @Nullable OrderByExpressionContext orderByExpression) {
     super(dataSchema, limit, nullHandlingEnabled);
@@ -56,9 +54,7 @@ public class DoubleDistinctTable extends DistinctTable {
     _orderByExpression = orderByExpression;
   }
 
-  /**
-   * Constructor for distinct table with data table (on the broker side).
-   */
+  /// Constructor for distinct table with data table (on the broker side).
   public DoubleDistinctTable(DataSchema dataSchema, int limit, boolean nullHandlingEnabled,
       @Nullable OrderByExpressionContext orderByExpression, DataTable dataTable) {
     super(dataSchema, limit, nullHandlingEnabled);
@@ -237,11 +233,10 @@ public class DoubleDistinctTable extends DistinctTable {
     int numRowsAdded = 0;
     DoubleIterator doubleIterator = _valueSet.iterator();
     while (doubleIterator.hasNext()) {
-      Tracing.ThreadAccountantOps.sampleAndCheckInterruptionPeriodically(numRowsAdded);
+      QueryThreadContext.checkTerminationAndSampleUsagePeriodically(numRowsAdded++, "DoubleDistinctTable#toDataTable");
       dataTableBuilder.startRow();
       dataTableBuilder.setColumn(0, doubleIterator.nextDouble());
       dataTableBuilder.finishRow();
-      numRowsAdded++;
     }
     if (_hasNull) {
       RoaringBitmap nullBitmap = new RoaringBitmap();

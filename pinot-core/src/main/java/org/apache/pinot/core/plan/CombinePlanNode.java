@@ -34,22 +34,22 @@ import org.apache.pinot.core.operator.combine.SelectionOnlyCombineOperator;
 import org.apache.pinot.core.operator.combine.SelectionOrderByCombineOperator;
 import org.apache.pinot.core.operator.combine.SequentialSortedGroupByCombineOperator;
 import org.apache.pinot.core.operator.combine.SortedGroupByCombineOperator;
+import org.apache.pinot.core.operator.streaming.StreamingGroupByCombineOperator;
 import org.apache.pinot.core.operator.streaming.StreamingSelectionOnlyCombineOperator;
 import org.apache.pinot.core.query.executor.ResultsBlockStreamer;
 import org.apache.pinot.core.query.request.context.QueryContext;
 import org.apache.pinot.core.query.request.context.utils.QueryContextUtils;
 import org.apache.pinot.core.util.QueryMultiThreadingUtils;
-import org.apache.pinot.spi.exception.BadQueryRequestException;
 import org.apache.pinot.spi.exception.QueryCancelledException;
+import org.apache.pinot.spi.exception.QueryException;
+import org.apache.pinot.spi.query.QueryThreadContext;
 import org.apache.pinot.spi.trace.InvocationRecording;
 import org.apache.pinot.spi.trace.InvocationScope;
 import org.apache.pinot.spi.trace.Tracing;
 
 
-/**
- * The <code>CombinePlanNode</code> class provides the execution plan for combining results from multiple segments in
- * V1/SSQE.
- */
+/// The `CombinePlanNode` class provides the execution plan for combining results from multiple segments in
+/// V1/SSQE.
 @SuppressWarnings({"rawtypes", "unchecked"})
 public class CombinePlanNode implements PlanNode {
   // Try to schedule 10 plans for each thread, or evenly distribute plans to all MAX_NUM_THREADS_PER_QUERY threads
@@ -60,14 +60,12 @@ public class CombinePlanNode implements PlanNode {
   private final ExecutorService _executorService;
   private final ResultsBlockStreamer _streamer;
 
-  /**
-   * Constructor for the class.
-   *
-   * @param planNodes List of underlying plan nodes
-   * @param queryContext Query context
-   * @param executorService Executor service
-   * @param streamer Optional results block streamer for streaming query
-   */
+  /// Constructor for the class.
+  ///
+  /// @param planNodes List of underlying plan nodes
+  /// @param queryContext Query context
+  /// @param executorService Executor service
+  /// @param streamer Optional results block streamer for streaming query
   public CombinePlanNode(List<PlanNode> planNodes, QueryContext queryContext, ExecutorService executorService,
       @Nullable ResultsBlockStreamer streamer) {
     _planNodes = planNodes;
@@ -89,34 +87,36 @@ public class CombinePlanNode implements PlanNode {
     recording.setNumChildren(numPlanNodes);
     List<Operator> operators = new ArrayList<>(numPlanNodes);
 
-    if (numPlanNodes <= TARGET_NUM_PLANS_PER_THREAD) {
-      // Small number of plan nodes, run them sequentially
+    int numTasks = QueryMultiThreadingUtils.getNumTasks(numPlanNodes, TARGET_NUM_PLANS_PER_THREAD,
+        _queryContext.getMaxExecutionThreads());
+    recording.setNumTasks(numTasks);
+    if (numTasks == 1) {
+      // Single task, run all plan nodes sequentially on the current thread. The per-plan-node termination check below
+      // honors the query deadline and cancellation, so there is no need to offload to a separate thread.
       for (PlanNode planNode : _planNodes) {
+        // Building a plan node can be expensive (e.g. FST/IFST regexp processing), so check for query termination
+        // between plan nodes to avoid wasting resources on a cancelled or timed-out query.
+        QueryThreadContext.checkTerminationAndSampleUsage("CombinePlanNode");
         operators.add(planNode.run());
       }
     } else {
-      // Large number of plan nodes, run them in parallel
-      // NOTE: Even if we get single executor thread, still run it using a separate thread so that the timeout can be
-      //       honored
-      int numTasks = QueryMultiThreadingUtils.getNumTasks(numPlanNodes, TARGET_NUM_PLANS_PER_THREAD,
-          _queryContext.getMaxExecutionThreads());
-      recording.setNumTasks(numTasks);
+      // Multiple tasks, run them in parallel
       QueryMultiThreadingUtils.runTasksWithDeadline(numTasks, index -> {
         List<Operator> ops = new ArrayList<>();
         for (int i = index; i < numPlanNodes; i += numTasks) {
+          // Building a plan node can be expensive (e.g. FST/IFST regexp processing), so check for query termination
+          // between plan nodes to avoid wasting resources on a cancelled or timed-out query.
+          QueryThreadContext.checkTerminationAndSampleUsage("CombinePlanNode");
           ops.add(_planNodes.get(i).run());
         }
         return ops;
-      }, taskRes -> {
-        if (taskRes != null) {
-          operators.addAll(taskRes);
-        }
-      }, e -> {
+      }, operators::addAll, e -> {
         // Future object will throw ExecutionException for execution exception, need to check the cause to determine
-        // whether it is caused by bad query
+        // how to surface it. Preserve QueryException (e.g. termination/timeout from checkTerminationAndSampleUsage,
+        // BadQueryRequestException) so the original error code is not lost behind a generic RuntimeException.
         Throwable cause = e.getCause();
-        if (cause instanceof BadQueryRequestException) {
-          throw (BadQueryRequestException) cause;
+        if (cause instanceof QueryException) {
+          throw (QueryException) cause;
         }
         if (e instanceof InterruptedException) {
           throw new QueryCancelledException("Cancelled while running CombinePlanNode", e);
@@ -125,44 +125,50 @@ public class CombinePlanNode implements PlanNode {
       }, _executorService, _queryContext.getEndTimeMs());
     }
 
-    if (_streamer != null
-          && QueryContextUtils.isSelectionOnlyQuery(_queryContext) && _queryContext.getLimit() != 0) {
-      // Use streaming operator only for non-empty selection-only query
-      return new StreamingSelectionOnlyCombineOperator(operators, _queryContext, _executorService);
-    } else {
-      if (QueryContextUtils.isAggregationQuery(_queryContext)) {
-        if (_queryContext.getGroupByExpressions() == null) {
-          // Aggregation only
-          return new AggregationCombineOperator(operators, _queryContext, _executorService);
-        } else {
-          // Sorted aggregation group-by, when safeTrim and limit is not too large
-          if (_queryContext.shouldSortAggregateUnderSafeTrim()) {
-            if (operators.size() < _queryContext.getSortAggregateSequentialCombineNumSegmentsThreshold()) {
-              return new SequentialSortedGroupByCombineOperator(operators, _queryContext, _executorService);
-            }
-            return new SortedGroupByCombineOperator(operators, _queryContext, _executorService);
-          }
-          // Aggregation group-by
-          return new GroupByCombineOperator(operators, _queryContext, _executorService);
-        }
-      } else if (QueryContextUtils.isSelectionQuery(_queryContext)) {
-        if (_queryContext.getLimit() == 0 || _queryContext.getOrderByExpressions() == null) {
-          // Selection only
-          return new SelectionOnlyCombineOperator(operators, _queryContext, _executorService);
-        } else {
-          // Selection order-by
-          List<OrderByExpressionContext> orderByExpressions = _queryContext.getOrderByExpressions();
-          assert orderByExpressions != null;
-          if (orderByExpressions.get(0).getExpression().getType() == ExpressionContext.Type.IDENTIFIER) {
-            return new MinMaxValueBasedSelectionOrderByCombineOperator(operators, _queryContext, _executorService);
-          } else {
-            return new SelectionOrderByCombineOperator(operators, _queryContext, _executorService);
-          }
-        }
-      } else {
-        assert QueryContextUtils.isDistinctQuery(_queryContext);
-        return new DistinctCombineOperator(operators, _queryContext, _executorService);
+    if (_streamer != null) {
+      if (QueryContextUtils.isSelectionOnlyQuery(_queryContext) && _queryContext.getLimit() != 0) {
+        // Use streaming operator only for non-empty selection-only query
+        return new StreamingSelectionOnlyCombineOperator(operators, _queryContext, _executorService);
       }
+      int flushThreshold = _queryContext.getStreamingGroupByFlushThreshold();
+      if (flushThreshold > 0 && QueryContextUtils.isAggregationQuery(_queryContext)
+          && _queryContext.getGroupByExpressions() != null) {
+        // Use streaming group-by operator for MSE leaf stages with flush threshold
+        return new StreamingGroupByCombineOperator(operators, _queryContext, _executorService, flushThreshold);
+      }
+    }
+    if (QueryContextUtils.isAggregationQuery(_queryContext)) {
+      if (_queryContext.getGroupByExpressions() == null) {
+        // Aggregation only
+        return new AggregationCombineOperator(operators, _queryContext, _executorService);
+      } else {
+        // Sorted aggregation group-by, when safeTrim and limit is not too large
+        if (_queryContext.shouldSortAggregateUnderSafeTrim()) {
+          if (operators.size() < _queryContext.getSortAggregateSequentialCombineNumSegmentsThreshold()) {
+            return new SequentialSortedGroupByCombineOperator(operators, _queryContext, _executorService);
+          }
+          return new SortedGroupByCombineOperator(operators, _queryContext, _executorService);
+        }
+        // Aggregation group-by
+        return new GroupByCombineOperator(operators, _queryContext, _executorService);
+      }
+    } else if (QueryContextUtils.isSelectionQuery(_queryContext)) {
+      if (_queryContext.getLimit() == 0 || _queryContext.getOrderByExpressions() == null) {
+        // Selection only
+        return new SelectionOnlyCombineOperator(operators, _queryContext, _executorService);
+      } else {
+        // Selection order-by
+        List<OrderByExpressionContext> orderByExpressions = _queryContext.getOrderByExpressions();
+        assert orderByExpressions != null;
+        if (orderByExpressions.get(0).getExpression().getType() == ExpressionContext.Type.IDENTIFIER) {
+          return new MinMaxValueBasedSelectionOrderByCombineOperator(operators, _queryContext, _executorService);
+        } else {
+          return new SelectionOrderByCombineOperator(operators, _queryContext, _executorService);
+        }
+      }
+    } else {
+      assert QueryContextUtils.isDistinctQuery(_queryContext);
+      return new DistinctCombineOperator(operators, _queryContext, _executorService);
     }
   }
 }

@@ -29,9 +29,10 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import javax.ws.rs.NotAuthorizedException;
 import org.apache.pinot.broker.api.AccessControl;
+import org.apache.pinot.common.auth.BasicAuthTokenUtils;
 import org.apache.pinot.common.request.BrokerRequest;
 import org.apache.pinot.core.auth.BasicAuthPrincipal;
-import org.apache.pinot.core.auth.BasicAuthUtils;
+import org.apache.pinot.core.auth.BasicAuthPrincipalUtils;
 import org.apache.pinot.spi.auth.AuthorizationResult;
 import org.apache.pinot.spi.auth.TableAuthorizationResult;
 import org.apache.pinot.spi.auth.TableRowColAccessResult;
@@ -40,17 +41,15 @@ import org.apache.pinot.spi.auth.broker.RequesterIdentity;
 import org.apache.pinot.spi.env.PinotConfiguration;
 
 
-/**
- * Basic Authentication based on http headers. Configured via the "pinot.broker.access.control" family of properties.
- *
- * <pre>
- *     Example:
- *     pinot.broker.access.control.principals=admin123,user456
- *     pinot.broker.access.control.principals.admin123.password=verysecret
- *     pinot.broker.access.control.principals.user456.password=kindasecret
- *     pinot.broker.access.control.principals.user456.tables=stuff,lessImportantStuff
- * </pre>
- */
+/// Basic Authentication based on http headers. Configured via the "pinot.broker.access.control" family of properties.
+///
+/// ```
+/// Example:
+/// pinot.broker.access.control.principals=admin123,user456
+/// pinot.broker.access.control.principals.admin123.password=verysecret
+/// pinot.broker.access.control.principals.user456.password=kindasecret
+/// pinot.broker.access.control.principals.user456.tables=stuff,lessImportantStuff
+/// ```
 public class BasicAuthAccessControlFactory extends AccessControlFactory {
   private static final String PREFIX = "principals";
 
@@ -62,7 +61,8 @@ public class BasicAuthAccessControlFactory extends AccessControlFactory {
 
   @Override
   public void init(PinotConfiguration configuration) {
-    _accessControl = new BasicAuthAccessControl(BasicAuthUtils.extractBasicAuthPrincipals(configuration, PREFIX));
+    _accessControl = new BasicAuthAccessControl(
+        BasicAuthPrincipalUtils.extractBasicAuthPrincipals(configuration, PREFIX));
   }
 
   @Override
@@ -70,9 +70,7 @@ public class BasicAuthAccessControlFactory extends AccessControlFactory {
     return _accessControl;
   }
 
-  /**
-   * Access Control using header-based basic http authentication
-   */
+  /// Access Control using header-based basic http authentication
   private static class BasicAuthAccessControl implements AccessControl {
     private final Map<String, BasicAuthPrincipal> _token2principal;
 
@@ -160,7 +158,7 @@ public class BasicAuthAccessControlFactory extends AccessControlFactory {
       if (tokens.isEmpty()) {
         return Optional.empty();
       }
-      return tokens.stream().map(org.apache.pinot.common.auth.BasicAuthUtils::normalizeBase64Token)
+      return tokens.stream().map(BasicAuthTokenUtils::normalizeBase64Token)
           .map(_token2principal::get).filter(Objects::nonNull)
           .findFirst();
     }

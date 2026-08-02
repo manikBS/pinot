@@ -22,12 +22,10 @@ import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListenableFutureTask;
 import com.google.common.util.concurrent.MoreExecutors;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAccumulator;
 import org.apache.pinot.common.metrics.ServerMeter;
-import org.apache.pinot.common.metrics.ServerMetrics;
 import org.apache.pinot.common.metrics.ServerQueryPhase;
 import org.apache.pinot.common.metrics.ServerTimer;
 import org.apache.pinot.common.utils.config.QueryOptionsUtils;
@@ -35,30 +33,26 @@ import org.apache.pinot.core.query.executor.QueryExecutor;
 import org.apache.pinot.core.query.request.ServerQueryRequest;
 import org.apache.pinot.core.query.scheduler.resources.BinaryWorkloadResourceManager;
 import org.apache.pinot.core.query.scheduler.resources.QueryExecutorService;
-import org.apache.pinot.spi.accounting.ThreadResourceUsageAccountant;
+import org.apache.pinot.spi.accounting.ThreadAccountant;
 import org.apache.pinot.spi.env.PinotConfiguration;
-import org.apache.pinot.spi.query.QueryThreadContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/**
- * This scheduler is designed to deal with two types of workloads
- * 1. Primary Workloads -> regular queries from the application
- * 2. Secondary Workloads -> adhoc queries fired from tools, testing, etc
- *
- *
- * Primary Workload Queries
- * Primary workloads queries are executed with priority and submitted to the Runner threads as and when they arrive.
- * The resources used by a primary workload query is not capped.
- *
- * Secondary Workload Queries
- *   - Secondary workload queries are identified using a query option -> "SET isSecondaryWorkload=true"
- *   - Secondary workload queries are contained as follows:
- *       - Restrictions on number of runner threads available to process secondary queries
- *       - Restrictions on total number of worker threads available to process a single secondary query
- *       - Restrictions on total number of worker threads available to process all in-progress secondary queries
- */
+/// This scheduler is designed to deal with two types of workloads
+/// 1. Primary Workloads -> regular queries from the application
+/// 2. Secondary Workloads -> adhoc queries fired from tools, testing, etc
+///
+/// Primary Workload Queries
+/// Primary workloads queries are executed with priority and submitted to the Runner threads as and when they arrive.
+/// The resources used by a primary workload query is not capped.
+///
+/// Secondary Workload Queries
+///   - Secondary workload queries are identified using a query option -> "SET isSecondaryWorkload=true"
+///   - Secondary workload queries are contained as follows:
+///       - Restrictions on number of runner threads available to process secondary queries
+///       - Restrictions on total number of worker threads available to process a single secondary query
+///       - Restrictions on total number of worker threads available to process all in-progress secondary queries
 public class BinaryWorkloadScheduler extends QueryScheduler {
   private static final Logger LOGGER = LoggerFactory.getLogger(BinaryWorkloadScheduler.class);
 
@@ -73,10 +67,10 @@ public class BinaryWorkloadScheduler extends QueryScheduler {
 
   Thread _scheduler;
 
-  public BinaryWorkloadScheduler(PinotConfiguration config, QueryExecutor queryExecutor, ServerMetrics metrics,
-      LongAccumulator latestQueryTime, ThreadResourceUsageAccountant resourceUsageAccountant) {
-    super(config, queryExecutor, new BinaryWorkloadResourceManager(config, resourceUsageAccountant), metrics,
-        latestQueryTime);
+  public BinaryWorkloadScheduler(PinotConfiguration config, String instanceId, QueryExecutor queryExecutor,
+      ThreadAccountant threadAccountant, LongAccumulator latestQueryTime) {
+    super(config, instanceId, queryExecutor, threadAccountant, latestQueryTime,
+        new BinaryWorkloadResourceManager(config));
 
     _secondaryQueryQ = new SecondaryWorkloadQueue(config, _resourceManager);
     _numSecondaryRunners = config.getProperty(MAX_SECONDARY_QUERIES, DEFAULT_MAX_SECONDARY_QUERIES);
@@ -97,9 +91,8 @@ public class BinaryWorkloadScheduler extends QueryScheduler {
 
     queryRequest.getTimerContext().startNewPhaseTimer(ServerQueryPhase.SCHEDULER_WAIT);
     if (!QueryOptionsUtils.isSecondaryWorkload(queryRequest.getQueryContext().getQueryOptions())) {
-      QueryExecutorService queryExecutorService = _resourceManager.getExecutorService(queryRequest, null);
-      ExecutorService innerExecutorService = QueryThreadContext.contextAwareExecutorService(queryExecutorService);
-      ListenableFutureTask<byte[]> queryTask = createQueryFutureTask(queryRequest, innerExecutorService);
+      QueryExecutorService executorService = _resourceManager.getExecutorService(queryRequest, null);
+      ListenableFutureTask<byte[]> queryTask = createQueryFutureTask(queryRequest, executorService);
       _resourceManager.getQueryRunners().submit(queryTask);
       return queryTask;
     }
@@ -151,20 +144,19 @@ public class BinaryWorkloadScheduler extends QueryScheduler {
             break;
           }
           try {
-            final SchedulerQueryContext request = _secondaryQueryQ.take();
+            SchedulerQueryContext request = _secondaryQueryQ.take();
             if (request == null) {
               continue;
             }
             ServerQueryRequest queryRequest = request.getQueryRequest();
-            final QueryExecutorService executor =
-                _resourceManager.getExecutorService(queryRequest, request.getSchedulerGroup());
-            ExecutorService innerExecutor = QueryThreadContext.contextAwareExecutorService(executor);
-            final ListenableFutureTask<byte[]> queryFutureTask = createQueryFutureTask(queryRequest, innerExecutor);
+            SchedulerGroup schedulerGroup = request.getSchedulerGroup();
+            QueryExecutorService executorService = _resourceManager.getExecutorService(queryRequest, schedulerGroup);
+            ListenableFutureTask<byte[]> queryFutureTask = createQueryFutureTask(queryRequest, executorService);
             queryFutureTask.addListener(new Runnable() {
               @Override
               public void run() {
-                executor.releaseWorkers();
-                request.getSchedulerGroup().endQuery();
+                executorService.releaseWorkers();
+                schedulerGroup.endQuery();
                 _secondaryRunnerSemaphore.release();
                 checkStopResourceManager();
               }
@@ -174,7 +166,7 @@ public class BinaryWorkloadScheduler extends QueryScheduler {
             updateSecondaryWorkloadMetrics(queryRequest);
 
             request.setResultFuture(queryFutureTask);
-            request.getSchedulerGroup().startQuery();
+            schedulerGroup.startQuery();
             _resourceManager.getQueryRunners().submit(queryFutureTask);
           } catch (Throwable t) {
             LOGGER.error(

@@ -150,7 +150,7 @@ public class JsonResponseEncoder implements ResponseEncoder {
 
   private Map<String, Object> extractMap(JsonNode jsonValue) {
     Map<String, Object> map = new HashMap<>();
-    jsonValue.fields().forEachRemaining(entry -> {
+    jsonValue.properties().forEach(entry -> {
       String key = entry.getKey();
       Object value = extractValue(entry.getValue());
       map.put(key, value);
@@ -190,9 +190,11 @@ public class JsonResponseEncoder implements ResponseEncoder {
           doubleArray[k] = jsonValue.get(k).asDouble();
         }
         return doubleArray;
-      case STRING_ARRAY:
+      case BIG_DECIMAL_ARRAY:
       case TIMESTAMP_ARRAY:
+      case STRING_ARRAY:
       case BYTES_ARRAY:
+      case UUID_ARRAY:
         String[] stringArray = new String[jsonValue.size()];
         for (int k = 0; k < jsonValue.size(); k++) {
           stringArray[k] = jsonValue.get(k).textValue();
@@ -203,8 +205,7 @@ public class JsonResponseEncoder implements ResponseEncoder {
     }
   }
 
-  private static Object extractValue(DataSchema.ColumnDataType columnDataType, JsonNode jsonValue)
-      throws IOException {
+  private static Object extractValue(DataSchema.ColumnDataType columnDataType, JsonNode jsonValue) {
     if (jsonValue.isNull()) {
       return null;
     }
@@ -219,11 +220,12 @@ public class JsonResponseEncoder implements ResponseEncoder {
         return Double.valueOf(jsonValue.asDouble()).floatValue();
       case DOUBLE:
         return jsonValue.asDouble();
-      case STRING:
-      case BYTES:
-      case TIMESTAMP:
-      case JSON:
       case BIG_DECIMAL:
+      case TIMESTAMP:
+      case STRING:
+      case JSON:
+      case BYTES:
+      case UUID:
       case OBJECT:
         return jsonValue.textValue();
       case UNKNOWN:

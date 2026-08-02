@@ -93,7 +93,6 @@ public class PerfBenchmarkDriver {
 
   // TODO: read from configuration.
   private final int _numReplicas = 1;
-  private final String _segmentAssignmentStrategy = "BalanceNumSegmentAssignmentStrategy";
   private final String _brokerTenantName = "DefaultTenant";
   private final String _serverTenantName = "DefaultTenant";
 
@@ -310,9 +309,7 @@ public class PerfBenchmarkDriver {
     }
   }
 
-  /**
-   * Register and connect to Helix cluster as Spectator role.
-   */
+  /// Register and connect to Helix cluster as Spectator role.
   private HelixManager registerAndConnectAsHelixSpectator(String instanceId) {
     HelixManager helixManager =
         HelixManagerFactory.getZKHelixManager(_clusterName, instanceId, InstanceType.SPECTATOR, _zkAddress);
@@ -345,18 +342,16 @@ public class PerfBenchmarkDriver {
   public void configureTable(String tableName, List<String> invertedIndexColumns, List<String> bloomFilterColumns)
       throws Exception {
     TableConfig tableConfig = new TableConfigBuilder(TableType.OFFLINE).setTableName(tableName)
-        .setSegmentAssignmentStrategy(_segmentAssignmentStrategy).setNumReplicas(_numReplicas)
+        .setNumReplicas(_numReplicas)
         .setBrokerTenant(_brokerTenantName).setServerTenant(_serverTenantName).setLoadMode(_loadMode)
         .setSegmentVersion(_segmentFormatVersion).setInvertedIndexColumns(invertedIndexColumns)
         .setBloomFilterColumns(bloomFilterColumns).build();
     _helixResourceManager.addTable(tableConfig);
   }
 
-  /**
-   * Add segment while segment data is already in server data directory.
-   *
-   * @param segmentMetadata segment metadata.
-   */
+  /// Add segment while segment data is already in server data directory.
+  ///
+  /// @param segmentMetadata segment metadata.
   public void addSegment(String tableNameWithType, SegmentMetadata segmentMetadata) {
     _helixResourceManager.addNewSegment(tableNameWithType, segmentMetadata,
         "http://" + _controllerAddress + "/" + segmentMetadata.getName());
@@ -463,16 +458,14 @@ public class PerfBenchmarkDriver {
     }
   }
 
-  /**
-   * Start cluster components with default configuration.
-   *
-   * @param isStartZookeeper whether to start zookeeper.
-   * @param isStartController whether to start controller.
-   * @param isStartBroker whether to start broker.
-   * @param isStartServer whether to start server.
-   * @return perf benchmark driver.
-   * @throws Exception
-   */
+  /// Start cluster components with default configuration.
+  ///
+  /// @param isStartZookeeper whether to start zookeeper.
+  /// @param isStartController whether to start controller.
+  /// @param isStartBroker whether to start broker.
+  /// @param isStartServer whether to start server.
+  /// @return perf benchmark driver.
+  /// @throws Exception
   public static PerfBenchmarkDriver startComponents(boolean isStartZookeeper, boolean isStartController,
       boolean isStartBroker, boolean isStartServer, @Nullable String serverDataDir)
       throws Exception {

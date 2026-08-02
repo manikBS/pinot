@@ -34,11 +34,10 @@ import org.apache.pinot.spi.utils.hash.MurmurHashFunctions;
 import org.roaringbitmap.RoaringBitmap;
 
 
-/**
- * The <code>TransformBlockValSet</code> class represents the block value set for a transform function in the transform
- * block.
- * <p>Caller is responsible for calling the correct method based on the data source metadata for the block value set.
- */
+/// The `TransformBlockValSet` class represents the block value set for a transform function in the transform
+/// block.
+///
+/// Caller is responsible for calling the correct method based on the data source metadata for the block value set.
 public class TransformBlockValSet implements BlockValSet {
   private final ValueBlock _valueBlock;
   private final TransformFunction _transformFunction;
@@ -77,6 +76,15 @@ public class TransformBlockValSet implements BlockValSet {
   @Override
   public Dictionary getDictionary() {
     return _transformFunction.getDictionary();
+  }
+
+  /// A transform function that exposes a dictionary always builds it itself (e.g.,
+  /// [org.apache.pinot.core.operator.transform.function.IdentifierTransformFunction] only exposes the
+  /// underlying column's dictionary when its forward index is dict-encoded), so the dict-id read path is callable
+  /// whenever the dictionary is present.
+  @Override
+  public boolean isDictionaryEncoded() {
+    return _transformFunction.getDictionary() != null;
   }
 
   @Override
@@ -217,6 +225,14 @@ public class TransformBlockValSet implements BlockValSet {
   }
 
   @Override
+  public BigDecimal[][] getBigDecimalValuesMV() {
+    try (InvocationScope scope = Tracing.getTracer().createScope(TransformBlockValSet.class)) {
+      recordTransformValues(scope, DataType.BIG_DECIMAL, false);
+      return _transformFunction.transformToBigDecimalValuesMV(_valueBlock);
+    }
+  }
+
+  @Override
   public String[][] getStringValuesMV() {
     try (InvocationScope scope = Tracing.getTracer().createScope(TransformBlockValSet.class)) {
       recordTransformValues(scope, DataType.STRING, false);
@@ -271,10 +287,22 @@ public class TransformBlockValSet implements BlockValSet {
             _numMVEntries[i] = doubleValues[i].length;
           }
           return _numMVEntries;
+        case BIG_DECIMAL:
+          BigDecimal[][] bigDecimalValues = getBigDecimalValuesMV();
+          for (int i = 0; i < numDocs; i++) {
+            _numMVEntries[i] = bigDecimalValues[i].length;
+          }
+          return _numMVEntries;
         case STRING:
           String[][] stringValues = getStringValuesMV();
           for (int i = 0; i < numDocs; i++) {
             _numMVEntries[i] = stringValues[i].length;
+          }
+          return _numMVEntries;
+        case BYTES:
+          byte[][][] bytesValues = getBytesValuesMV();
+          for (int i = 0; i < numDocs; i++) {
+            _numMVEntries[i] = bytesValues[i].length;
           }
           return _numMVEntries;
         default:

@@ -20,8 +20,10 @@ package org.apache.pinot.spi.utils;
 
 import com.google.common.base.Preconditions;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -34,11 +36,10 @@ import org.apache.pinot.spi.config.table.ingestion.IngestionConfig;
 import org.apache.pinot.spi.env.PinotConfiguration;
 import org.apache.pinot.spi.ingestion.batch.BatchConfigProperties;
 import org.apache.pinot.spi.stream.StreamConfig;
+import org.apache.pinot.spi.stream.StreamConsumerFactory;
 
 
-/**
- * Helper methods for extracting fields from IngestionConfig in a backward compatible manner
- */
+/// Helper methods for extracting fields from IngestionConfig in a backward compatible manner
 @SuppressWarnings("deprecation")
 public final class IngestionConfigUtils {
   private IngestionConfigUtils() {
@@ -56,13 +57,11 @@ public final class IngestionConfigUtils {
   // than the normal max number of partitions on stream (e.g. 512).
   public static final int PARTITION_PADDING_OFFSET = 10000;
 
-  /**
-   * Fetches the streamConfig from the given realtime table.
-   * First, the ingestionConfigs->stream->streamConfigs will be checked.
-   * If not found, the indexingConfig->streamConfigs will be checked (which is deprecated).
-   * @param tableConfig realtime table config
-   * @return streamConfigs List of maps
-   */
+  /// Fetches the streamConfig from the given realtime table.
+  /// First, the ingestionConfigs->stream->streamConfigs will be checked.
+  /// If not found, the indexingConfig->streamConfigs will be checked (which is deprecated).
+  /// @param tableConfig realtime table config
+  /// @return streamConfigs List of maps
   public static List<Map<String, String>> getStreamConfigMaps(TableConfig tableConfig) {
     String realtimeTableName = tableConfig.getTableName();
     Preconditions.checkState(tableConfig.getTableType() == TableType.REALTIME,
@@ -99,34 +98,52 @@ public final class IngestionConfigUtils {
     return new StreamConfig(tableConfig.getTableName(), getFirstStreamConfigMap(tableConfig));
   }
 
-  /**
-   * Getting the Pinot segment level partition id from the stream partition id.
-   * @param partitionId the partition id from the stream
-   * @param index the index of the SteamConfig from the list of StreamConfigs
-   */
+  /// Returns `true` if the table has multiple streams configured.
+  /// Safe to call for any table type: returns `false` for OFFLINE tables and REALTIME tables that lack stream
+  /// configs.
+  public static boolean hasMultipleStreams(TableConfig tableConfig) {
+    IngestionConfig ingestionConfig = tableConfig.getIngestionConfig();
+    if (ingestionConfig == null || ingestionConfig.getStreamIngestionConfig() == null) {
+      return false;
+    }
+    List<Map<String, String>> streamConfigMaps = ingestionConfig.getStreamIngestionConfig().getStreamConfigMaps();
+    return streamConfigMaps != null && streamConfigMaps.size() > 1;
+  }
+
+  /// Getting the Pinot segment level partition id from the stream partition id.
+  /// @param partitionId the partition id from the stream
+  /// @param index the index of the SteamConfig from the list of StreamConfigs
   public static int getPinotPartitionIdFromStreamPartitionId(int partitionId, int index) {
     return index * PARTITION_PADDING_OFFSET + partitionId;
   }
 
-  /**
-   * Getting the Stream partition id from the Pinot segment partition id.
-   * @param partitionId the segment partition id on Pinot
-   */
+  /// Returns the stream partition id from the Pinot segment partition id.
+  /// Returns `partitionId` unchanged for tables without multiple streams.
+  public static int getStreamPartitionIdFromPinotPartitionId(TableConfig tableConfig, int partitionId) {
+    return hasMultipleStreams(tableConfig) ? getStreamPartitionIdFromPinotPartitionId(partitionId) : partitionId;
+  }
+
+  /// Returns the stream partition id from the Pinot segment partition id.
+  /// NOTE: First verify if there are multiple stream configs before invoking this method. User might plug in a stream
+  ///       that generates large partition id.
   public static int getStreamPartitionIdFromPinotPartitionId(int partitionId) {
     return partitionId % PARTITION_PADDING_OFFSET;
   }
 
-  /**
-   * Getting the StreamConfig index of StreamConfigs list from the Pinot segment partition id.
-   * @param partitionId the segment partition id on Pinot
-   */
+  /// Returns the StreamConfig for the given Pinot segment partition id.
+  public static StreamConfig getStreamConfigFromPinotPartitionId(List<StreamConfig> streamConfigs, int partitionId) {
+    return streamConfigs.size() > 1 ? streamConfigs.get(getStreamConfigIndexFromPinotPartitionId(partitionId))
+        : streamConfigs.get(0);
+  }
+
+  /// Returns the index of the StreamConfigs from the Pinot segment partition id.
+  /// NOTE: First verify if there are multiple stream configs before invoking this method. User might plug in a stream
+  ///       that generates large partition id.
   public static int getStreamConfigIndexFromPinotPartitionId(int partitionId) {
     return partitionId / PARTITION_PADDING_OFFSET;
   }
 
-  /**
-   * Fetches the streamConfig from the list of streamConfigs according to the partition id.
-   */
+  /// Fetches the streamConfig from the list of streamConfigs according to the partition id.
   public static Map<String, String> getStreamConfigMap(TableConfig tableConfig, int partitionId) {
     List<Map<String, String>> streamConfigMaps = getStreamConfigMaps(tableConfig);
     int numStreams = streamConfigMaps.size();
@@ -155,9 +172,7 @@ public final class IngestionConfigUtils {
     return null;
   }
 
-  /**
-   * Fetches the configured consistentDataPush boolean from the table config
-   */
+  /// Fetches the configured consistentDataPush boolean from the table config
   public static boolean getBatchSegmentIngestionConsistentDataPushEnabled(TableConfig tableConfig) {
     boolean consistentDataPush = false;
     if (tableConfig.getIngestionConfig() != null) {
@@ -169,12 +184,10 @@ public final class IngestionConfigUtils {
     return consistentDataPush;
   }
 
-  /**
-   * Fetches the configured segmentIngestionType (APPEND/REFRESH) from the table config
-   * First checks in the ingestionConfig. If not found, checks in the segmentsConfig (has been deprecated from here
-   * in favor of ingestion
-   * config)
-   */
+  /// Fetches the configured segmentIngestionType (APPEND/REFRESH) from the table config
+  /// First checks in the ingestionConfig. If not found, checks in the segmentsConfig (has been deprecated from here
+  /// in favor of ingestion
+  /// config)
   public static String getBatchSegmentIngestionType(TableConfig tableConfig) {
     String segmentIngestionType = null;
     if (tableConfig.getIngestionConfig() != null) {
@@ -189,12 +202,10 @@ public final class IngestionConfigUtils {
     return (segmentIngestionType == null) ? DEFAULT_SEGMENT_INGESTION_TYPE : segmentIngestionType;
   }
 
-  /**
-   * Fetches the configured segmentIngestionFrequency from the table config
-   * First checks in the ingestionConfig. If not found, checks in the segmentsConfig (has been deprecated from here
-   * in favor of ingestion
-   * config)
-   */
+  /// Fetches the configured segmentIngestionFrequency from the table config
+  /// First checks in the ingestionConfig. If not found, checks in the segmentsConfig (has been deprecated from here
+  /// in favor of ingestion
+  /// config)
   public static String getBatchSegmentIngestionFrequency(TableConfig tableConfig) {
     String segmentIngestionFrequency = null;
     if (tableConfig.getIngestionConfig() != null) {
@@ -209,16 +220,12 @@ public final class IngestionConfigUtils {
     return segmentIngestionFrequency;
   }
 
-  /**
-   * Fetch the properties which belong to record reader, by removing the identifier prefix
-   */
+  /// Fetch the properties which belong to record reader, by removing the identifier prefix
   public static Map<String, String> getRecordReaderProps(Map<String, String> batchConfigMap) {
     return getConfigMapWithPrefix(batchConfigMap, BatchConfigProperties.RECORD_READER_PROP_PREFIX);
   }
 
-  /**
-   * Fetch the properties which belong to segment name generator, by removing the identifier prefix
-   */
+  /// Fetch the properties which belong to segment name generator, by removing the identifier prefix
   public static Map<String, String> getSegmentNameGeneratorProps(Map<String, String> batchConfigMap) {
     return getConfigMapWithPrefix(batchConfigMap, BatchConfigProperties.SEGMENT_NAME_GENERATOR_PROP_PREFIX);
   }
@@ -231,9 +238,7 @@ public final class IngestionConfigUtils {
     return new PinotConfiguration(getPropsWithPrefix(batchConfigMap, BatchConfigProperties.OUTPUT_FS_PROP_PREFIX));
   }
 
-  /**
-   * Extracts entries where keys start with given prefix
-   */
+  /// Extracts entries where keys start with given prefix
   public static Map<String, String> extractPropsMatchingPrefix(Map<String, String> batchConfigMap, String prefix) {
     Map<String, String> propsMatchingPrefix = new HashMap<>();
     for (Map.Entry<String, String> entry : batchConfigMap.entrySet()) {
@@ -266,24 +271,18 @@ public final class IngestionConfigUtils {
     return props;
   }
 
-  /**
-   * Extracts the segment name generator type from the batchConfigMap, or returns default value if not found
-   */
+  /// Extracts the segment name generator type from the batchConfigMap, or returns default value if not found
   public static String getSegmentNameGeneratorType(Map<String, String> batchConfigMap) {
     return batchConfigMap.getOrDefault(BatchConfigProperties.SEGMENT_NAME_GENERATOR_TYPE,
         DEFAULT_SEGMENT_NAME_GENERATOR_TYPE);
   }
 
-  /**
-   * Extracts the push mode from the batchConfigMap, or returns default value if not found
-   */
+  /// Extracts the push mode from the batchConfigMap, or returns default value if not found
   public static String getPushMode(Map<String, String> batchConfigMap) {
     return batchConfigMap.getOrDefault(BatchConfigProperties.PUSH_MODE, DEFAULT_PUSH_MODE);
   }
 
-  /**
-   * Extracts the push attempts from the batchConfigMap, or returns default value if not found
-   */
+  /// Extracts the push attempts from the batchConfigMap, or returns default value if not found
   public static int getPushAttempts(Map<String, String> batchConfigMap) {
     String pushAttempts = batchConfigMap.get(BatchConfigProperties.PUSH_ATTEMPTS);
     if (StringUtils.isNumeric(pushAttempts)) {
@@ -292,9 +291,7 @@ public final class IngestionConfigUtils {
     return DEFAULT_PUSH_ATTEMPTS;
   }
 
-  /**
-   * Extracts the push parallelism from the batchConfigMap, or returns default value if not found
-   */
+  /// Extracts the push parallelism from the batchConfigMap, or returns default value if not found
   public static int getPushParallelism(Map<String, String> batchConfigMap) {
     String pushParallelism = batchConfigMap.get(BatchConfigProperties.PUSH_PARALLELISM);
     if (StringUtils.isNumeric(pushParallelism)) {
@@ -303,14 +300,29 @@ public final class IngestionConfigUtils {
     return DEFAULT_PUSH_PARALLELISM;
   }
 
-  /**
-   * Extracts the push return interval millis from the batchConfigMap, or returns default value if not found
-   */
+  /// Extracts the push return interval millis from the batchConfigMap, or returns default value if not found
   public static long getPushRetryIntervalMillis(Map<String, String> batchConfigMap) {
     String pushRetryIntervalMillis = batchConfigMap.get(BatchConfigProperties.PUSH_RETRY_INTERVAL_MILLIS);
     if (StringUtils.isNumeric(pushRetryIntervalMillis)) {
       return Long.parseLong(pushRetryIntervalMillis);
     }
     return DEFAULT_PUSH_RETRY_INTERVAL_MILLIS;
+  }
+
+  /// Returns a unique client id which can be used for Stream providers
+  public static String getTableTopicUniqueClientId(String className, StreamConfig streamConfig) {
+    return StreamConsumerFactory.getUniqueClientId(
+        className + "-" + streamConfig.getTableNameWithType() + "-" + streamConfig.getTopicName());
+  }
+
+  /// Returns a Map of stream config index to Set of stream partition Ids.
+  /// @param pinotPartitionIds Set of pinot partition ids.
+  public static Map<Integer, Set<Integer>> getStreamConfigIndexToStreamPartitions(Set<Integer> pinotPartitionIds) {
+    Map<Integer, Set<Integer>> streamIndexToPartitions = new HashMap<>();
+    for (Integer partition : pinotPartitionIds) {
+      streamIndexToPartitions.computeIfAbsent(getStreamConfigIndexFromPinotPartitionId(partition),
+          k -> new HashSet<>()).add(getStreamPartitionIdFromPinotPartitionId(partition));
+    }
+    return streamIndexToPartitions;
   }
 }

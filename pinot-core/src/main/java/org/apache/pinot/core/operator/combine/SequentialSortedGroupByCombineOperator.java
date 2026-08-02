@@ -35,39 +35,32 @@ import org.apache.pinot.core.query.request.context.QueryContext;
 import org.apache.pinot.core.query.scheduler.resources.ResourceManager;
 import org.apache.pinot.core.query.utils.OrderByComparatorFactory;
 import org.apache.pinot.core.util.GroupByUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 
-/**
- * <p>Sequential Combine operator for sort-aggregation</p>
- *
- * <p>This operator merges sorted group-by results similar to other
- * {@link BaseSingleBlockCombineOperator}s,
- * as it uses a producer-consumer paradigm.</p>
- *
- * <p>Each worker thread produces sorted segment-level group-by results
- * while the main thread consumer via a {@code _blockingQueue} and merges them</p>
- *
- * <p>This allows merging in a streaming fashion without having to wait
- * for all segments to be ready. This sequential merging is usually
- * more efficient than the pair-size merging {@link SortedGroupByCombineOperator}
- * when the number of segments is smaller than the available number of cores</p>
- */
+/// Sequential Combine operator for sort-aggregation
+///
+/// This operator merges sorted group-by results similar to other
+/// [BaseSingleBlockCombineOperator]s,
+/// as it uses a producer-consumer paradigm.
+///
+/// Each worker thread produces sorted segment-level group-by results
+/// while the main thread consumer via a `_blockingQueue` and merges them
+///
+/// This allows merging in a streaming fashion without having to wait
+/// for all segments to be ready. This sequential merging is usually
+/// more efficient than the pair-size merging [SortedGroupByCombineOperator]
+/// when the number of segments is smaller than the available number of cores
 @SuppressWarnings({"rawtypes"})
 public class SequentialSortedGroupByCombineOperator extends BaseSingleBlockCombineOperator<GroupByResultsBlock> {
-
-  private static final Logger LOGGER = LoggerFactory.getLogger(SequentialSortedGroupByCombineOperator.class);
+  // TODO: Consider changing it to "COMBINE_GROUP_BY_SEQUENTIAL_SORTED" to distinguish from GroupByCombineOperator
   private static final String EXPLAIN_NAME = "COMBINE_GROUP_BY";
 
-  // We use a CountDownLatch to track if all Futures are finished by the query timeout, and cancel the unfinished
-  // _futures (try to interrupt the execution if it already started).
-  private volatile boolean _groupsTrimmed;
-  private volatile boolean _numGroupsLimitReached;
-  private volatile boolean _numGroupsWarningLimitReached;
-
-  private SortedRecords _records = null;
   private final SortedRecordsMerger _sortedRecordsMerger;
+
+  private SortedRecords _records;
+  private boolean _groupsTrimmed;
+  private boolean _numGroupsLimitReached;
+  private boolean _numGroupsWarningLimitReached;
 
   public SequentialSortedGroupByCombineOperator(List<Operator> operators, QueryContext queryContext,
       ExecutorService executorService) {
@@ -80,10 +73,8 @@ public class SequentialSortedGroupByCombineOperator extends BaseSingleBlockCombi
     _sortedRecordsMerger = new SortedRecordsMerger(queryContext, queryContext.getLimit(), recordKeyComparator);
   }
 
-  /**
-   * For group-by queries, when maxExecutionThreads is not explicitly configured, override it to create as many tasks as
-   * the default number of query worker threads (or the number of operators / segments if that's lower).
-   */
+  /// For group-by queries, when maxExecutionThreads is not explicitly configured, override it to create as many
+  /// tasks as the default number of query worker threads (or the number of operators / segments if that's lower).
   private static QueryContext overrideMaxExecutionThreads(QueryContext queryContext, int numOperators) {
     int maxExecutionThreads = queryContext.getMaxExecutionThreads();
     if (maxExecutionThreads <= 0) {
@@ -97,30 +88,18 @@ public class SequentialSortedGroupByCombineOperator extends BaseSingleBlockCombi
     return EXPLAIN_NAME;
   }
 
-  /**
-   * Executes query on one sorted segment in a worker thread and ship them via {@link this#_blockingQueue}
-   */
+  /// Executes query on one sorted segment in a worker thread and ship them via [this#_blockingQueue]
   @Override
   protected void processSegments() {
     int operatorId;
     while (_processingException.get() == null && (operatorId = _nextOperatorId.getAndIncrement()) < _numOperators) {
       Operator operator = _operators.get(operatorId);
+      GroupByResultsBlock resultsBlock;
       try {
         if (operator instanceof AcquireReleaseColumnsSegmentOperator) {
           ((AcquireReleaseColumnsSegmentOperator) operator).acquire();
         }
-        GroupByResultsBlock resultsBlock = (GroupByResultsBlock) operator.nextBlock();
-        if (resultsBlock.isGroupsTrimmed()) {
-          _groupsTrimmed = true;
-        }
-        // Set groups limit reached flag.
-        if (resultsBlock.isNumGroupsLimitReached()) {
-          _numGroupsLimitReached = true;
-        }
-        if (resultsBlock.isNumGroupsWarningLimitReached()) {
-          _numGroupsWarningLimitReached = true;
-        }
-        _blockingQueue.offer(resultsBlock);
+        resultsBlock = (GroupByResultsBlock) operator.nextBlock();
       } catch (RuntimeException e) {
         throw wrapOperatorException(operator, e);
       } finally {
@@ -128,43 +107,24 @@ public class SequentialSortedGroupByCombineOperator extends BaseSingleBlockCombi
           ((AcquireReleaseColumnsSegmentOperator) operator).release();
         }
       }
+      _blockingQueue.offer(resultsBlock);
     }
   }
 
-  @Override
-  public void onProcessSegmentsException(Throwable t) {
-    _processingException.compareAndSet(null, t);
-  }
-
-  /**
-   * {@inheritDoc}
-   *
-   * <p>Combines sorted intermediate aggregation result blocks from underlying operators and returns a merged one.
-   * <ul>
-   *   <li>
-   *     Merges multiple sorted intermediate aggregation result from {@link this#_blockingQueue} into one
-   *     and create a result block
-   *   </li>
-   *   <li>
-   *     Set all exceptions encountered during execution into the merged result block
-   *   </li>
-   * </ul>
-   */
+  /// {@inheritDoc}
+  ///
+  /// Merges multiple sorted intermediate results from [#_blockingQueue] into one and creates a result block.
   @Override
   public BaseResultsBlock mergeResults()
       throws Exception {
-
+    DataSchema dataSchema = null;
     int numBlocksMerged = 0;
     long endTimeMs = _queryContext.getEndTimeMs();
-    DataSchema dataSchema = null;
     while (numBlocksMerged < _numOperators) {
       // Timeout has reached, shouldn't continue to process. `_blockingQueue.poll` will continue to return blocks even
       // if negative timeout is provided; therefore an extra check is needed
       long waitTimeMs = endTimeMs - System.currentTimeMillis();
       if (waitTimeMs <= 0) {
-        String userError = "Timed out while combining group-by order-by results after " + waitTimeMs + "ms";
-        String logMsg = userError + ", queryContext = " + _queryContext;
-        LOGGER.error(logMsg);
         return getTimeoutResultsBlock(numBlocksMerged);
       }
       BaseResultsBlock blockToMerge = _blockingQueue.poll(waitTimeMs, TimeUnit.MILLISECONDS);
@@ -181,10 +141,17 @@ public class SequentialSortedGroupByCombineOperator extends BaseSingleBlockCombi
         dataSchema = groupByResultBlockToMerge.getDataSchema();
       }
 
+      // Merge records
+      if (_records == null) {
+        _records = GroupByUtils.getAndPopulateSortedRecords(groupByResultBlockToMerge);
+      } else {
+        _records = _sortedRecordsMerger.mergeGroupByResultsBlock(_records, groupByResultBlockToMerge);
+      }
+
+      // Set flags
       if (groupByResultBlockToMerge.isGroupsTrimmed()) {
         _groupsTrimmed = true;
       }
-      // Set groups limit reached flag.
       if (groupByResultBlockToMerge.isNumGroupsLimitReached()) {
         _numGroupsLimitReached = true;
       }
@@ -192,17 +159,10 @@ public class SequentialSortedGroupByCombineOperator extends BaseSingleBlockCombi
         _numGroupsWarningLimitReached = true;
       }
 
-      if (_records == null) {
-        _records = GroupByUtils.getAndPopulateSortedRecords(groupByResultBlockToMerge);
-      } else {
-        _records = _sortedRecordsMerger.mergeGroupByResultsBlock(_records, groupByResultBlockToMerge);
-      }
       numBlocksMerged++;
     }
 
-    SortedRecordTable table =
-        new SortedRecordTable(_records, dataSchema, _queryContext, _executorService);
-
+    SortedRecordTable table = new SortedRecordTable(_records, dataSchema, _queryContext, _executorService);
     if (_queryContext.isServerReturnFinalResult()) {
       table.finish(true, true);
     } else if (_queryContext.isServerReturnFinalResultKeyUnpartitioned()) {

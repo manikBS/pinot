@@ -18,7 +18,6 @@
  */
 package org.apache.pinot.tools.service;
 
-import com.google.common.collect.ImmutableList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -38,10 +37,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/**
- * PinotServiceManager is a user entry point to start Pinot instances in one process.
- *
- */
+/// PinotServiceManager is a user entry point to start Pinot instances in one process.
 public class PinotServiceManager {
 
   private static final Logger LOGGER = LoggerFactory.getLogger(PinotServiceManager.class);
@@ -268,7 +264,7 @@ public class PinotServiceManager {
   }
 
   public List<String> getRunningInstanceIds() {
-    return ImmutableList.copyOf(_runningInstanceMap.keySet());
+    return List.copyOf(_runningInstanceMap.keySet());
   }
 
   public String getZkAddress() {

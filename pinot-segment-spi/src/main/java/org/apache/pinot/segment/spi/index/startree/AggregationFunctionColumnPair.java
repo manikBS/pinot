@@ -67,23 +67,19 @@ public class AggregationFunctionColumnPair implements Comparable<AggregationFunc
     return fromFunctionAndColumnName(aggregationConfig.getAggregationFunction(), aggregationConfig.getColumnName());
   }
 
-  /**
-   * Return a new {@code AggregationFunctionColumnPair} from an existing functionColumnPair where the new pair
-   * has the {@link AggregationFunctionType} set to the underlying stored type used in the segment or indexes.
-   * @param functionColumnPair the existing functionColumnPair
-   * @return the new functionColumnPair
-   */
+  /// Return a new `AggregationFunctionColumnPair` from an existing functionColumnPair where the new pair
+  /// has the [AggregationFunctionType] set to the underlying stored type used in the segment or indexes.
+  /// @param functionColumnPair the existing functionColumnPair
+  /// @return the new functionColumnPair
   public static AggregationFunctionColumnPair resolveToStoredType(AggregationFunctionColumnPair functionColumnPair) {
     AggregationFunctionType storedType = getStoredType(functionColumnPair.getFunctionType());
     return new AggregationFunctionColumnPair(storedType, functionColumnPair.getColumn());
   }
 
-  /**
-   * Returns the stored {@code AggregationFunctionType} used to create the underlying value in the segment or index.
-   * Some aggregation functions share the same stored type but are used for different purposes in queries.
-   * @param aggregationType the aggregation type used in a query
-   * @return the underlying value aggregation type used in storage e.g. StarTree index
-   */
+  /// Returns the stored `AggregationFunctionType` used to create the underlying value in the segment or index.
+  /// Some aggregation functions share the same stored type but are used for different purposes in queries.
+  /// @param aggregationType the aggregation type used in a query
+  /// @return the underlying value aggregation type used in storage e.g. StarTree index
   public static AggregationFunctionType getStoredType(AggregationFunctionType aggregationType) {
     switch (aggregationType) {
       case DISTINCTCOUNTRAWHLL:
@@ -104,6 +100,15 @@ public class AggregationFunctionColumnPair implements Comparable<AggregationFunc
         return AggregationFunctionType.DISTINCTCOUNTCPCSKETCH;
       case DISTINCTCOUNTRAWULL:
         return AggregationFunctionType.DISTINCTCOUNTULL;
+      // TODO: Add type specific value aggregators for MIN / MAX / SUM and use those automatically for star-tree indexes
+      //       based on the column type. For now, fall back to the default double-based star-tree index if one exists.
+      case MINLONG:
+        return AggregationFunctionType.MIN;
+      case MAXLONG:
+        return AggregationFunctionType.MAX;
+      case SUMLONG:
+      case SUMINT:
+        return AggregationFunctionType.SUM;
       default:
         return aggregationType;
     }

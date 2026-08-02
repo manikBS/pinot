@@ -41,12 +41,10 @@ import org.apache.pinot.sql.parsers.SqlNodeAndOptions;
 import org.apache.pinot.tsdb.spi.series.TimeSeriesBlock;
 
 
-/**
- * {@code BrokerRequestHandlerDelegate} delegates the inbound broker request to one of the enabled
- * {@link BrokerRequestHandler} based on the requested handle type.
- *
- * {@see: @CommonConstant
- */
+/// `BrokerRequestHandlerDelegate` delegates the inbound broker request to one of the enabled
+/// [BrokerRequestHandler] based on the requested handle type.
+///
+/// {@see: @CommonConstant
 public class BrokerRequestHandlerDelegate implements BrokerRequestHandler {
   private final BaseSingleStageBrokerRequestHandler _singleStageBrokerRequestHandler;
   private final MultiStageBrokerRequestHandler _multiStageBrokerRequestHandler;
@@ -60,6 +58,11 @@ public class BrokerRequestHandlerDelegate implements BrokerRequestHandler {
     _multiStageBrokerRequestHandler = multiStageBrokerRequestHandler;
     _timeSeriesRequestHandler = timeSeriesRequestHandler;
     _responseStore = responseStore;
+  }
+
+  @Nullable
+  public MultiStageBrokerRequestHandler getMultiStageBrokerRequestHandler() {
+    return _multiStageBrokerRequestHandler;
   }
 
   @Override
@@ -136,6 +139,15 @@ public class BrokerRequestHandlerDelegate implements BrokerRequestHandler {
   }
 
   @Override
+  public BrokerResponse handleExplainTimeSeriesRequest(String lang, String rawQueryParamString,
+      Map<String, String> queryParams) {
+    if (_timeSeriesRequestHandler != null) {
+      return _timeSeriesRequestHandler.handleExplainTimeSeriesRequest(lang, rawQueryParamString, queryParams);
+    }
+    throw new QueryException(QueryErrorCode.INTERNAL, "Time series query engine not enabled.");
+  }
+
+  @Override
   public Map<Long, String> getRunningQueries() {
     // Both engines share the same request ID generator, so the query will have unique IDs across the two engines.
     Map<Long, String> queries = new HashMap<>(_singleStageBrokerRequestHandler.getRunningQueries());
@@ -151,7 +163,7 @@ public class BrokerRequestHandlerDelegate implements BrokerRequestHandler {
       throws Exception {
     if (_multiStageBrokerRequestHandler != null && _multiStageBrokerRequestHandler.cancelQuery(
         queryId, timeoutMs, executor, connMgr, serverResponses)) {
-        return true;
+      return true;
     }
     return _singleStageBrokerRequestHandler.cancelQuery(queryId, timeoutMs, executor, connMgr, serverResponses);
   }

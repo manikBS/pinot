@@ -22,39 +22,50 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.cache.Cache;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.function.Supplier;
+import java.util.function.BooleanSupplier;
 import javax.annotation.Nullable;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.helix.HelixManager;
+import org.apache.pinot.common.metrics.ServerMetrics;
 import org.apache.pinot.common.restlet.resources.SegmentErrorInfo;
+import org.apache.pinot.core.data.manager.realtime.ServerIngestionOomProtectionManager;
 import org.apache.pinot.segment.local.data.manager.TableDataManager;
 import org.apache.pinot.segment.local.utils.SegmentLocks;
-import org.apache.pinot.segment.local.utils.SegmentOperationsThrottler;
+import org.apache.pinot.segment.local.utils.SegmentOperationsThrottlerSet;
 import org.apache.pinot.segment.local.utils.SegmentReloadSemaphore;
+import org.apache.pinot.segment.local.utils.ServerReloadJobStatusCache;
 import org.apache.pinot.spi.annotations.InterfaceAudience;
 import org.apache.pinot.spi.config.instance.InstanceDataManagerConfig;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.data.Schema;
 
 
-/**
- * Factory for {@link TableDataManager}.
- */
+/// Factory for [TableDataManager].
 @InterfaceAudience.Private
 public interface TableDataManagerProvider {
 
   void init(InstanceDataManagerConfig instanceDataManagerConfig, HelixManager helixManager, SegmentLocks segmentLocks,
-      @Nullable SegmentOperationsThrottler segmentOperationsThrottler);
+      @Nullable SegmentOperationsThrottlerSet segmentOperationsThrottlerSet,
+      ServerReloadJobStatusCache reloadJobStatusCache);
 
-  TableDataManager getTableDataManager(TableConfig tableConfig, Schema schema,
-      SegmentReloadSemaphore segmentRefreshSemaphore, ExecutorService segmentRefreshExecutor,
+  TableDataManager getTableDataManager(TableConfig tableConfig,
+      Schema schema,
+      SegmentReloadSemaphore segmentRefreshSemaphore,
+      ExecutorService segmentReloadRefreshExecutor,
       @Nullable ExecutorService segmentPreloadExecutor,
       @Nullable Cache<Pair<String, String>, SegmentErrorInfo> errorCache,
-      Supplier<Boolean> isServerReadyToServeQueries);
+      BooleanSupplier isServerReadyToConsumeData,
+      BooleanSupplier isServerReadyToServeQueries,
+      ServerIngestionOomProtectionManager.ServerThrottleState serverIngestionOomProtectionThrottleState,
+      boolean enableAsyncSegmentRefresh,
+      ServerReloadJobStatusCache reloadJobStatusCache);
 
+  /// This util is only used in test code. do not use in prod code.
   @VisibleForTesting
   default TableDataManager getTableDataManager(TableConfig tableConfig, Schema schema) {
     return getTableDataManager(tableConfig, schema, new SegmentReloadSemaphore(1), Executors.newSingleThreadExecutor(),
-        null, null, () -> true);
+        null, null, () -> true, () -> true,
+        ServerIngestionOomProtectionManager.createServerThrottleState(null, ServerMetrics.get()), false,
+        new ServerReloadJobStatusCache("testInstance"));
   }
 }

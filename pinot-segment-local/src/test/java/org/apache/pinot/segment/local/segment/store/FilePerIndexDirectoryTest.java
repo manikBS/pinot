@@ -20,16 +20,18 @@ package org.apache.pinot.segment.local.segment.store;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.TreeSet;
 import org.apache.commons.io.FileUtils;
 import org.apache.pinot.segment.local.PinotBuffersAfterMethodCheckRule;
 import org.apache.pinot.segment.local.segment.creator.impl.text.LuceneTextIndexCreator;
-import org.apache.pinot.segment.local.segment.creator.impl.text.NativeTextIndexCreator;
 import org.apache.pinot.segment.local.segment.index.readers.text.LuceneTextIndexReader;
+import org.apache.pinot.segment.local.segment.index.text.TextIndexConfigBuilder;
 import org.apache.pinot.segment.spi.V1Constants;
 import org.apache.pinot.segment.spi.creator.SegmentVersion;
 import org.apache.pinot.segment.spi.index.StandardIndexes;
@@ -174,37 +176,22 @@ public class FilePerIndexDirectoryTest implements PinotBuffersAfterMethodCheckRu
   }
 
   @Test
-  public void nativeTextIndexIsRecognized()
+  public void legacyNativeTextIndexIsIgnored()
       throws IOException {
-    // See https://github.com/apache/pinot/issues/11529
-    try (FilePerIndexDirectory fpi = new FilePerIndexDirectory(TEMP_DIR, _segmentMetadata, ReadMode.mmap);
-        NativeTextIndexCreator fooCreator = new NativeTextIndexCreator("foo", "myTable_OFFLINE", false, TEMP_DIR)) {
-
-      fooCreator.add("{\"clean\":\"this\"}");
-      fooCreator.seal();
-
-      assertTrue(fpi.hasIndexFor("foo", StandardIndexes.text()), "Native text index not found");
-    }
-  }
-
-  @Test
-  public void nativeTextIndexIsDeleted()
-      throws IOException {
-    // See https://github.com/apache/pinot/issues/11529
-    nativeTextIndexIsRecognized();
+    File legacyNativeTextIndex =
+        new File(TEMP_DIR, "foo" + V1Constants.Indexes.DEPRECATED_NATIVE_TEXT_INDEX_FILE_EXTENSION);
+    Files.writeString(legacyNativeTextIndex.toPath(), "legacy");
     try (FilePerIndexDirectory fpi = new FilePerIndexDirectory(TEMP_DIR, _segmentMetadata, ReadMode.mmap)) {
+      assertFalse(fpi.hasIndexFor("foo", StandardIndexes.text()), "Legacy native text index should be ignored");
       fpi.removeIndex("foo", StandardIndexes.text());
     }
-    try (FilePerIndexDirectory fpi = new FilePerIndexDirectory(TEMP_DIR, _segmentMetadata, ReadMode.mmap)) {
-      assertFalse(fpi.hasIndexFor("foo", StandardIndexes.text()), "Native text index was not deleted");
-    }
+    assertFalse(legacyNativeTextIndex.exists(), "Legacy native text index was not deleted");
   }
 
   @Test
   public void testRemoveTextIndices()
       throws IOException {
-    TextIndexConfig config = new TextIndexConfig(false, null, null, false, false, null, null, true, 500, null, null,
-        null, null, false, false, 0, false, null);
+    TextIndexConfig config = new TextIndexConfigBuilder().build();
     try (FilePerIndexDirectory fpi = new FilePerIndexDirectory(TEMP_DIR, _segmentMetadata, ReadMode.mmap);
         LuceneTextIndexCreator fooCreator = new LuceneTextIndexCreator("foo", TEMP_DIR, true, false, null, null,
             config);
@@ -271,8 +258,7 @@ public class FilePerIndexDirectoryTest implements PinotBuffersAfterMethodCheckRu
   @Test
   public void testGetColumnIndices()
       throws IOException {
-    TextIndexConfig config = new TextIndexConfig(false, null, null, false, false, null, null, true, 500, null, null,
-        null, null, false, false, 0, false, null);
+    TextIndexConfig config = new TextIndexConfigBuilder().build();
     // Write sth to buffers and flush them to index files on disk
     try (FilePerIndexDirectory fpi = new FilePerIndexDirectory(TEMP_DIR, _segmentMetadata, ReadMode.mmap);
         LuceneTextIndexCreator fooCreator = new LuceneTextIndexCreator("foo", TEMP_DIR, true, false, null, null,
@@ -304,10 +290,10 @@ public class FilePerIndexDirectoryTest implements PinotBuffersAfterMethodCheckRu
     try (FilePerIndexDirectory fpi = new FilePerIndexDirectory(TEMP_DIR, _segmentMetadata, ReadMode.mmap)) {
       assertEquals(fpi.getColumnsWithIndex(StandardIndexes.forward()), new HashSet<>(Arrays.asList("col1", "col3")));
       assertEquals(fpi.getColumnsWithIndex(StandardIndexes.dictionary()),
-          new HashSet<>(Collections.singletonList("col2")));
+          new HashSet<>(List.of("col2")));
       assertEquals(fpi.getColumnsWithIndex(StandardIndexes.inverted()),
-          new HashSet<>(Collections.singletonList("col4")));
-      assertEquals(fpi.getColumnsWithIndex(StandardIndexes.h3()), new HashSet<>(Collections.singletonList("col5")));
+          new HashSet<>(List.of("col4")));
+      assertEquals(fpi.getColumnsWithIndex(StandardIndexes.h3()), new HashSet<>(List.of("col5")));
       assertEquals(fpi.getColumnsWithIndex(StandardIndexes.text()), new HashSet<>(Arrays.asList("foo", "bar")));
 
       fpi.removeIndex("col1", StandardIndexes.forward());
@@ -317,12 +303,12 @@ public class FilePerIndexDirectoryTest implements PinotBuffersAfterMethodCheckRu
       fpi.removeIndex("col111", StandardIndexes.dictionary());
 
       assertEquals(fpi.getColumnsWithIndex(StandardIndexes.forward()),
-          new HashSet<>(Collections.singletonList("col3")));
-      assertEquals(fpi.getColumnsWithIndex(StandardIndexes.dictionary()), new HashSet<>(Collections.emptySet()));
+          new HashSet<>(List.of("col3")));
+      assertEquals(fpi.getColumnsWithIndex(StandardIndexes.dictionary()), new HashSet<>(Set.of()));
       assertEquals(fpi.getColumnsWithIndex(StandardIndexes.inverted()),
-          new HashSet<>(Collections.singletonList("col4")));
-      assertEquals(fpi.getColumnsWithIndex(StandardIndexes.h3()), new HashSet<>(Collections.emptySet()));
-      assertEquals(fpi.getColumnsWithIndex(StandardIndexes.text()), new HashSet<>(Collections.singletonList("bar")));
+          new HashSet<>(List.of("col4")));
+      assertEquals(fpi.getColumnsWithIndex(StandardIndexes.h3()), new HashSet<>(Set.of()));
+      assertEquals(fpi.getColumnsWithIndex(StandardIndexes.text()), new HashSet<>(List.of("bar")));
     }
   }
 }

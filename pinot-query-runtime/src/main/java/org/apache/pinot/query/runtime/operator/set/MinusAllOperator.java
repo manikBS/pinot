@@ -27,10 +27,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/**
- * EXCEPT ALL operator.
- */
-public class MinusAllOperator extends RightRowSetBasedSetOperator {
+/// EXCEPT ALL operator.
+public class MinusAllOperator extends BinarySetOperator {
   private static final Logger LOGGER = LoggerFactory.getLogger(MinusAllOperator.class);
   private static final String EXPLAIN_NAME = "MINUS_ALL";
 

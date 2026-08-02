@@ -18,16 +18,12 @@
  */
 package org.apache.pinot.query.runtime.operator.exchange;
 
-import com.google.common.base.Preconditions;
-import java.io.IOException;
-import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
 import org.apache.calcite.rel.RelDistribution;
-import org.apache.pinot.query.mailbox.ReceivingMailbox;
+import org.apache.pinot.common.utils.ExceptionUtils;
 import org.apache.pinot.query.mailbox.SendingMailbox;
 import org.apache.pinot.query.planner.partitioning.KeySelectorFactory;
 import org.apache.pinot.query.runtime.blocks.BlockSplitter;
@@ -37,10 +33,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/**
- * This class contains the shared logic across all different exchange types for exchanging data across servers.
- */
-public abstract class BlockExchange {
+/// This class contains the shared logic across all different exchange types for exchanging data across servers.
+public abstract class BlockExchange implements AutoCloseable {
   private static final Logger LOGGER = LoggerFactory.getLogger(BlockExchange.class);
   // TODO: Deduct this value via grpc config maximum byte size; and make it configurable with override.
   // TODO: Max block size is a soft limit. only counts fixedSize datatable byte buffer
@@ -53,16 +47,14 @@ public abstract class BlockExchange {
   protected static final Function<List<SendingMailbox>, Integer> RANDOM_INDEX_CHOOSER =
       (mailboxes) -> ThreadLocalRandom.current().nextInt(mailboxes.size());
 
-  /**
-   * Factory method to create a BlockExchange based on the distribution type.
-   *
-   * It is important to notice that stats should only be sent to one mailbox to avoid sending the same stats multiple
-   * times.
-   * The statsIndexChooser function is used to choose the mailbox index to send stats to.
-   * In most cases the {@link #RANDOM_INDEX_CHOOSER} should be used, but in some cases, like when using spools, the
-   * mailbox index that receives the stats should be tuned.
-   * @param statsIndexChooser a function to choose the mailbox index to send stats to.
-   */
+  /// Factory method to create a BlockExchange based on the distribution type.
+  ///
+  /// It is important to notice that stats should only be sent to one mailbox to avoid sending the same stats multiple
+  /// times.
+  /// The statsIndexChooser function is used to choose the mailbox index to send stats to.
+  /// In most cases the [#RANDOM_INDEX_CHOOSER] should be used, but in some cases, like when using spools, the
+  /// mailbox index that receives the stats should be tuned.
+  /// @param statsIndexChooser a function to choose the mailbox index to send stats to.
   public static BlockExchange getExchange(List<SendingMailbox> sendingMailboxes,
       RelDistribution.Type distributionType, List<Integer> keys, BlockSplitter splitter,
       Function<List<SendingMailbox>, Integer> statsIndexChooser, String hashFunction) {
@@ -96,15 +88,12 @@ public abstract class BlockExchange {
     _statsIndexChooser = statsIndexChooser;
   }
 
-  /**
-   * API to send a block to the destination mailboxes.
-   * @param block the block to be transferred
-   * @return true if all the mailboxes has been early terminated.
-   * @throws IOException when sending stream unexpectedly closed.
-   * @throws TimeoutException when sending stream timeout.
-   */
-  public boolean send(MseBlock.Data block)
-      throws IOException, TimeoutException {
+  /// API to send a block to the destination mailboxes.
+  /// @param block the block to be transferred
+  /// @return true if all the mailboxes has been early terminated.
+  /// @throws org.apache.pinot.spi.exception.QueryException if any mailbox fails to send the block, including on
+  ///                                                       timeout.
+  public boolean send(MseBlock.Data block) {
     boolean isEarlyTerminated = true;
     for (SendingMailbox sendingMailbox : _sendingMailboxes) {
       if (!sendingMailbox.isEarlyTerminated()) {
@@ -118,16 +107,12 @@ public abstract class BlockExchange {
     return isEarlyTerminated;
   }
 
-  /**
-   * API to send a block to the destination mailboxes.
-   * @param eosBlock the block to be transferred
-   * @return true if all the mailboxes has been early terminated.
-   * @throws IOException when sending stream unexpectedly closed.
-   * @throws TimeoutException when sending stream timeout.
-   */
-  public boolean send(MseBlock.Eos eosBlock, List<DataBuffer> serializedStats)
-      throws IOException, TimeoutException {
-    int numMailboxes = _sendingMailboxes.size();
+  /// API to send a block to the destination mailboxes.
+  /// @param eosBlock the block to be transferred
+  /// @return true if all the mailboxes has been early terminated.
+  /// @throws org.apache.pinot.spi.exception.QueryException if any mailbox fails to send the block, including on
+  ///                                                       timeout.
+  public boolean send(MseBlock.Eos eosBlock, List<DataBuffer> serializedStats) {
     int mailboxIdToSendMetadata;
     if (!serializedStats.isEmpty()) {
       mailboxIdToSendMetadata = _statsIndexChooser.apply(_sendingMailboxes);
@@ -139,21 +124,29 @@ public abstract class BlockExchange {
       // this may happen when the block exchange is itself used as a sending mailbox, like when using spools
       mailboxIdToSendMetadata = -1;
     }
+    RuntimeException firstException = null;
+    int numMailboxes = _sendingMailboxes.size();
     for (int i = 0; i < numMailboxes; i++) {
-      SendingMailbox sendingMailbox = _sendingMailboxes.get(i);
-      List<DataBuffer> statsToSend = i == mailboxIdToSendMetadata ? serializedStats : Collections.emptyList();
+      try {
+        SendingMailbox sendingMailbox = _sendingMailboxes.get(i);
+        List<DataBuffer> statsToSend = i == mailboxIdToSendMetadata ? serializedStats : List.of();
 
-      sendingMailbox.send(eosBlock, statsToSend);
-      sendingMailbox.complete();
-      if (LOGGER.isTraceEnabled()) {
-        LOGGER.trace("Block sent: {} {} to {}", eosBlock, System.identityHashCode(eosBlock), sendingMailbox);
+        sendingMailbox.send(eosBlock, statsToSend);
+        if (LOGGER.isTraceEnabled()) {
+          LOGGER.trace("Block sent: {} {} to {}", eosBlock, System.identityHashCode(eosBlock), sendingMailbox);
+        }
+      } catch (RuntimeException e) {
+        // We want to try to send EOS to all mailboxes, so we catch the exception and rethrow it at the end.
+        firstException = ExceptionUtils.suppress(e, firstException);
       }
+    }
+    if (firstException != null) {
+      throw firstException;
     }
     return false;
   }
 
-  protected void sendBlock(SendingMailbox sendingMailbox, MseBlock.Data block)
-      throws IOException, TimeoutException {
+  protected void sendBlock(SendingMailbox sendingMailbox, MseBlock.Data block) {
     if (LOGGER.isTraceEnabled()) {
       LOGGER.trace("Sending block: {} {} to {}", block, System.identityHashCode(block), sendingMailbox);
     }
@@ -171,12 +164,21 @@ public abstract class BlockExchange {
     }
   }
 
-  protected abstract void route(List<SendingMailbox> destinations, MseBlock.Data block)
-      throws IOException, TimeoutException;
+  protected abstract void route(List<SendingMailbox> destinations, MseBlock.Data block);
 
-  // Called when the OpChain gracefully returns.
-  // TODO: This is a no-op right now.
+  @Override
   public void close() {
+    RuntimeException firstException = null;
+    for (SendingMailbox sendingMailbox : _sendingMailboxes) {
+      try {
+        sendingMailbox.close();
+      } catch (Exception e) {
+        firstException = ExceptionUtils.suppress(e, firstException, RuntimeException::new, RuntimeException.class);
+      }
+    }
+    if (firstException != null) {
+      throw firstException;
+    }
   }
 
   public void cancel(Throwable t) {
@@ -189,18 +191,17 @@ public abstract class BlockExchange {
     return new BlockExchangeSendingMailbox(id);
   }
 
-  /**
-   * A mailbox that sends data blocks to a {@link BlockExchange}.
-   *
-   * BlockExchanges send data to a list of {@link SendingMailbox}es, which are responsible for sending the data
-   * to the corresponding {@link ReceivingMailbox}es. This class applies the decorator pattern to expose a BlockExchange
-   * as a SendingMailbox, open the possibility of having a BlockExchange as a destination for another BlockExchange.
-   *
-   * This is useful for example when a send operator has to send data to more than one stage. We need to broadcast the
-   * data to all the stages (the first BlockExchange). Then for each stage, we need to send the data to the
-   * corresponding workers (the inner BlockExchange). The inner BlockExchange may send data using a different
-   * distribution strategy.
-   */
+  /// A mailbox that sends data blocks to a [BlockExchange].
+  ///
+  /// BlockExchanges send data to a list of [SendingMailbox]es, which are responsible for sending the data to the
+  /// corresponding [org.apache.pinot.query.mailbox.ReceivingMailbox]es. This class applies the decorator pattern
+  /// to expose a BlockExchange as a SendingMailbox, open the possibility of having a BlockExchange as a destination for
+  /// another BlockExchange.
+  ///
+  /// This is useful for example when a send operator has to send data to more than one stage. We need to broadcast the
+  /// data to all the stages (the first BlockExchange). Then for each stage, we need to send the data to the
+  /// corresponding workers (the inner BlockExchange). The inner BlockExchange may send data using a different
+  /// distribution strategy.
   private class BlockExchangeSendingMailbox implements SendingMailbox {
     private final String _id;
     private boolean _earlyTerminated = false;
@@ -216,32 +217,19 @@ public abstract class BlockExchange {
     }
 
     @Override
-    public void send(MseBlock.Data data)
-        throws IOException, TimeoutException {
-      sendPrivate(data, Collections.emptyList());
-    }
-
-    @Override
-    public void send(MseBlock.Eos block, List<DataBuffer> serializedStats)
-        throws IOException, TimeoutException {
-      sendPrivate(block, serializedStats);
-    }
-
-    private void sendPrivate(MseBlock block, List<DataBuffer> serializedStats)
-        throws IOException, TimeoutException {
+    public void send(MseBlock.Data data) {
       if (LOGGER.isTraceEnabled()) {
-        LOGGER.trace("Exchange mailbox {} echoing {} {}", this, block, System.identityHashCode(block));
+        LOGGER.trace("Exchange mailbox {} echoing data block {} {}", this, data, System.identityHashCode(data));
       }
-      if (block.isData()) {
-        Preconditions.checkArgument(serializedStats.isEmpty(), "Data block cannot have stats");
-        _earlyTerminated = BlockExchange.this.send(((MseBlock.Data) block));
-      } else {
-        _earlyTerminated = BlockExchange.this.send(((MseBlock.Eos) block), serializedStats);
-      }
+      _earlyTerminated = BlockExchange.this.send(data);
     }
 
     @Override
-    public void complete() {
+    public void send(MseBlock.Eos block, List<DataBuffer> serializedStats) {
+      if (LOGGER.isTraceEnabled()) {
+        LOGGER.trace("Exchange mailbox {} echoing EOS block {} {}", this, block, System.identityHashCode(block));
+      }
+      _earlyTerminated = BlockExchange.this.send(block, serializedStats);
       _completed = true;
     }
 
@@ -263,6 +251,11 @@ public abstract class BlockExchange {
     @Override
     public String toString() {
       return "e" + _id;
+    }
+
+    @Override
+    public void close() {
+      BlockExchange.this.close();
     }
   }
 }

@@ -24,10 +24,10 @@ import java.util.concurrent.TimeUnit;
 import org.apache.helix.zookeeper.datamodel.ZNRecord;
 import org.apache.helix.zookeeper.datamodel.serializer.ZNRecordSerializer;
 import org.apache.helix.zookeeper.impl.client.ZkClient;
+import org.apache.pinot.common.utils.request.RequestUtils;
 import org.apache.pinot.segment.spi.index.ForwardIndexConfig;
 import org.apache.pinot.spi.data.FieldSpec;
 import org.apache.pinot.spi.env.PinotConfiguration;
-import org.apache.pinot.spi.query.QueryThreadContext;
 import org.apache.pinot.spi.services.ServiceRole;
 import org.apache.pinot.spi.utils.CommonConstants;
 import org.slf4j.Logger;
@@ -44,15 +44,13 @@ public class ServiceStartableUtils {
   private static final String PINOT_INSTANCE_CONFIG_KEY_PREFIX_TEMPLATE = "pinot.%s.";
   protected static String _timeZone;
 
-  /**
-   * Applies the ZK cluster config to:
-   * - The given instance config if it does not already exist.
-   * - Set the timezone.
-   * - Initialize the default values in {@link ForwardIndexConfig}.
-   *
-   * In the ZK cluster config:
-   * - pinot.all.* will be replaced to role specific config, e.g. pinot.controller.* for controllers
-   */
+  /// Applies the ZK cluster config to:
+  /// - The given instance config if it does not already exist.
+  /// - Set the timezone.
+  /// - Initialize the default values in [ForwardIndexConfig].
+  ///
+  /// In the ZK cluster config:
+  /// - pinot.all.\* will be replaced to role specific config, e.g. pinot.controller.\* for controllers
   public static void applyClusterConfig(PinotConfiguration instanceConfig, String zkAddress, String clusterName,
       ServiceRole serviceRole) {
     int zkClientSessionConfig =
@@ -95,14 +93,13 @@ public class ServiceStartableUtils {
           addConfigIfNotExists(instanceConfig, key, value);
         }
       }
-
-      QueryThreadContext.onStartup(instanceConfig);
     } finally {
       ZkStarter.closeAsync(zkClient);
     }
     setTimezone(instanceConfig);
     initForwardIndexConfig(instanceConfig);
     initFieldSpecConfig(instanceConfig);
+    initRequestUtilsConfig(instanceConfig);
   }
 
   private static void addConfigIfNotExists(PinotConfiguration instanceConfig, String key, String value) {
@@ -166,5 +163,12 @@ public class ServiceStartableUtils {
             defaultJsonMaxLength, FieldSpec.getDefaultJsonMaxLength());
       }
     }
+  }
+
+  public static void initRequestUtilsConfig(PinotConfiguration instanceConfig) {
+    boolean useLegacyLiteralUnescaping =
+        instanceConfig.getProperty(CommonConstants.Helix.CONFIG_OF_SSE_LEGACY_LITERAL_UNESCAPING,
+            CommonConstants.Helix.DEFAULT_SSE_LEGACY_LITERAL_UNESCAPING);
+    RequestUtils.setUseLegacyLiteralUnescaping(useLegacyLiteralUnescaping);
   }
 }

@@ -19,7 +19,6 @@
 package org.apache.pinot.query.runtime.operator;
 
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import org.apache.pinot.common.datatable.StatMap;
@@ -38,6 +37,7 @@ import org.apache.pinot.query.runtime.plan.OpChainExecutionContext;
 import org.apache.pinot.query.runtime.plan.server.ServerPlanRequestContext;
 import org.apache.pinot.query.testutils.MockDataBlockOperatorFactory;
 import org.apache.pinot.segment.spi.memory.DataBuffer;
+import org.apache.pinot.spi.query.QueryExecutionContext;
 import org.apache.pinot.spi.utils.CommonConstants;
 import org.testng.Assert;
 
@@ -48,8 +48,8 @@ import static org.mockito.Mockito.when;
 public class OperatorTestUtil {
   // simple key-value collision schema/data test set: "Aa" and "BB" have same hash code in java.
   private static final List<List<Object[]>> SIMPLE_KV_DATA_ROWS = List.of(
-      List.of(new Object[]{1, "Aa"}, new Object[]{2, "BB"}, new Object[]{3, "BB"}),
-      List.of(new Object[]{1, "AA"}, new Object[]{2, "Aa"})
+      List.<Object[]>of(new Object[]{1, "Aa"}, new Object[]{2, "BB"}, new Object[]{3, "BB"}),
+      List.<Object[]>of(new Object[]{1, "AA"}, new Object[]{2, "Aa"})
   );
   private static final MockDataBlockOperatorFactory MOCK_OPERATOR_FACTORY;
 
@@ -92,7 +92,7 @@ public class OperatorTestUtil {
   }
 
   public static ReceivingMailbox.MseBlockWithStats errorWithEmptyStats(Exception e) {
-    return new ReceivingMailbox.MseBlockWithStats(ErrorMseBlock.fromException(e), Collections.emptyList());
+    return new ReceivingMailbox.MseBlockWithStats(ErrorMseBlock.fromException(e), List.of());
   }
 
   public static ReceivingMailbox.MseBlockWithStats errorWithStats(Exception e, List<DataBuffer> serializedStats) {
@@ -100,7 +100,7 @@ public class OperatorTestUtil {
   }
 
   public static ReceivingMailbox.MseBlockWithStats eosWithEmptyStats() {
-    return new ReceivingMailbox.MseBlockWithStats(SuccessMseBlock.INSTANCE, Collections.emptyList());
+    return new ReceivingMailbox.MseBlockWithStats(SuccessMseBlock.INSTANCE, List.of());
   }
 
   public static ReceivingMailbox.MseBlockWithStats eosWithStats(List<DataBuffer> serializedStats) {
@@ -109,8 +109,8 @@ public class OperatorTestUtil {
 
   public static OpChainExecutionContext getOpChainContext(MailboxService mailboxService, long deadlineMs,
       StageMetadata stageMetadata) {
-    return new OpChainExecutionContext(mailboxService, 0, deadlineMs, deadlineMs, Map.of(), stageMetadata,
-        stageMetadata.getWorkerMetadataList().get(0), null, null, true);
+    return new OpChainExecutionContext(mailboxService, 0, "cid", deadlineMs, deadlineMs, "brokerId", Map.of(),
+        stageMetadata, stageMetadata.getWorkerMetadataList().get(0), null, true, true);
   }
 
   public static OpChainExecutionContext getTracingContext() {
@@ -133,16 +133,14 @@ public class OperatorTestUtil {
     StageMetadata stageMetadata =
         new StageMetadata(0, List.of(workerMetadata), Map.of(DispatchablePlanFragment.TABLE_NAME_KEY, "testTable"));
     OpChainExecutionContext opChainExecutionContext =
-        new OpChainExecutionContext(mailboxService, 123L, Long.MAX_VALUE, Long.MAX_VALUE, opChainMetadata,
-            stageMetadata, workerMetadata, null, null, true);
+        OpChainExecutionContext.fromQueryContext(mailboxService, opChainMetadata, stageMetadata, workerMetadata, null,
+            true, true, QueryExecutionContext.forMseTest());
     opChainExecutionContext.setLeafStageContext(
         new ServerPlanRequestContext(new StagePlan(null, stageMetadata), null, null, null));
     return opChainExecutionContext;
   }
 
-  /**
-   * Verifies that the last operator stats in the current stage stats is of the given key class and returns it.
-   */
+  /// Verifies that the last operator stats in the current stage stats is of the given key class and returns it.
   public static <K extends Enum<K> & StatMap.Key> StatMap<K> getStatMap(Class<K> keyClass, MultiStageQueryStats stats) {
     MultiStageQueryStats.StageStats stageStats = stats.getCurrentStats();
     Assert.assertEquals(stageStats.getLastOperatorStats().getKeyClass(), keyClass,

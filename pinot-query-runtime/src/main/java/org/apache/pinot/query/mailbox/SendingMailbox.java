@@ -18,70 +18,46 @@
  */
 package org.apache.pinot.query.mailbox;
 
-import java.io.IOException;
 import java.util.List;
-import java.util.concurrent.TimeoutException;
 import org.apache.pinot.query.runtime.blocks.MseBlock;
-import org.apache.pinot.query.runtime.operator.exchange.BlockExchange;
 import org.apache.pinot.segment.spi.memory.DataBuffer;
 
 
-/**
- * Mailbox that's used to send data.
- */
-public interface SendingMailbox {
+/// Mailbox that's used to send data.
+///
+/// Usages of this interface should follow the pattern:
+///
+/// 1. Zero or more calls to [#send(MseBlock.Data)]
+/// 2. Then exactly one of:
+///   - One call to [#send(MseBlock.Eos, List)] if the receiver is not early terminated
+///   - One call to [#cancel(Throwable)] if the sender wants to cancel the receiver
+public interface SendingMailbox extends AutoCloseable {
 
-  /**
-   * Returns whether the mailbox is sending data to a local receiver, where blocks can be directly passed to the
-   * receiver.
-   */
+  /// Returns whether the mailbox is sending data to a local receiver, where blocks can be directly passed to the
+  /// receiver.
   boolean isLocal();
 
-  /**
-   * Sends a data block to the receiver. Note that SendingMailbox are required to acquire resources lazily in this call,
-   * and they should <b>not</b> acquire any resources when they are created. This method should throw if there was an
-   * error sending the data, since that would allow {@link BlockExchange} to exit early.
-   */
-  void send(MseBlock.Data data)
-      throws IOException, TimeoutException;
+  /// Sends a data block to the receiver. Note that SendingMailbox are required to acquire resources lazily in this
+  /// call, and they should **not** acquire any resources when they are created. This method should throw if there was
+  /// an error sending the data, since that would allow
+  /// [org.apache.pinot.query.runtime.operator.exchange.BlockExchange] to exit early.
+  void send(MseBlock.Data data);
 
-  /**
-   * Sends an EOS block to the receiver. Note that SendingMailbox are required to acquire resources lazily in this call,
-   * and they should <b>not</b> acquire any resources when they are created. This method should throw if there was an
-   * error sending the data, since that would allow {@link BlockExchange} to exit early.
-   */
-  void send(MseBlock.Eos block, List<DataBuffer> serializedStats)
-      throws IOException, TimeoutException;
+  /// Sends an EOS block to the receiver. Note that SendingMailbox are required to acquire resources lazily in this
+  /// call, and they should **not** acquire any resources when they are created. This method should throw if there was
+  /// an error sending the data, since that would allow
+  /// [org.apache.pinot.query.runtime.operator.exchange.BlockExchange] to exit early.
+  void send(MseBlock.Eos block, List<DataBuffer> serializedStats);
 
-  /**
-   * Called when there is no more data to be sent by the {@link BlockExchange}. This is also a signal for the
-   * SendingMailbox that the sender is done sending data from its end. Note that this doesn't mean that the receiver
-   * has received all the data.
-   *
-   * <p>
-   * <b>Note:</b> While this is similar to a close() method that's usually provided with objects that hold releasable
-   * resources, the key difference is that a SendingMailbox cannot completely release the resources on its end
-   * gracefully, since it would be waiting for the receiver to ack that it has received all the data. See
-   * {@link #cancel} which can allow callers to force release the underlying resources.
-   * </p>
-   */
-  void complete();
-
-  /**
-   * Cancels the mailbox and notifies the receiver of the cancellation so that it can release the underlying resources.
-   * No more blocks can be sent after calling this method.
-   */
+  /// Cancels the mailbox and notifies the receiver of the cancellation so that it can release the underlying resources.
+  /// No more blocks can be sent after calling this method.
   void cancel(Throwable t);
 
-  /**
-   * Returns whether the {@link ReceivingMailbox} is already closed. There is no need to send more blocks after the
-   * mailbox is terminated.
-   */
+  /// Returns whether the [ReceivingMailbox] is already closed. There is no need to send more blocks after the
+  /// mailbox is terminated.
   boolean isTerminated();
 
-  /**
-   * Returns whether the {@link ReceivingMailbox} is considered itself finished, and is expected a EOS block with
-   * statistics to be sent next.
-   */
+  /// Returns whether the [ReceivingMailbox] is considered itself finished, and is expected a EOS block with
+  /// statistics to be sent next.
   boolean isEarlyTerminated();
 }

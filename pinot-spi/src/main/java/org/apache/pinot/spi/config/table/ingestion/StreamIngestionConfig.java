@@ -26,11 +26,10 @@ import java.util.Map;
 import javax.annotation.Nullable;
 import org.apache.pinot.spi.config.BaseJsonConfig;
 import org.apache.pinot.spi.config.table.DisasterRecoveryMode;
+import org.apache.pinot.spi.utils.Enablement;
 
 
-/**
- * Contains all the configs related to the streams for ingestion
- */
+/// Contains all the configs related to the streams for ingestion
 public class StreamIngestionConfig extends BaseJsonConfig {
 
   @JsonPropertyDescription("All configs for the streams from which to ingest")
@@ -58,6 +57,18 @@ public class StreamIngestionConfig extends BaseJsonConfig {
   @JsonPropertyDescription("Recovery mode which is used to decide how to recover a segment online in IS but having no"
       + " completed (immutable) replica on any server in pause-less ingestion")
   private DisasterRecoveryMode _disasterRecoveryMode = DisasterRecoveryMode.DEFAULT;
+
+  @JsonPropertyDescription("Class to handle realtime offset auto reset")
+  private String _realtimeOffsetAutoResetHandlerClass;
+
+  @JsonPropertyDescription("If true, drop records whose partition column value does not map to the segment's designated"
+      + " partition during realtime ingestion. Defaults to false.")
+  private boolean _dropRecordOnPartitionMismatch;
+
+  @JsonPropertyDescription("Optional table-level enablement override for server-side ingestion OOM protection. "
+      + "Supported values are ENABLE, DISABLE and DEFAULT. If unset or DEFAULT, the table follows the server-level "
+      + "mode.")
+  private Enablement _oomProtection = Enablement.DEFAULT;
 
   @JsonCreator
   public StreamIngestionConfig(@JsonProperty("streamConfigMaps") List<Map<String, String>> streamConfigMaps) {
@@ -123,5 +134,30 @@ public class StreamIngestionConfig extends BaseJsonConfig {
 
   public void setDisasterRecoveryMode(DisasterRecoveryMode disasterRecoveryMode) {
     _disasterRecoveryMode = disasterRecoveryMode;
+  }
+
+  @Nullable
+  public String getRealtimeOffsetAutoResetHandlerClass() {
+    return _realtimeOffsetAutoResetHandlerClass;
+  }
+
+  public void setRealtimeOffsetAutoResetHandlerClass(String realtimeOffsetAutoResetHandlerClass) {
+    _realtimeOffsetAutoResetHandlerClass = realtimeOffsetAutoResetHandlerClass;
+  }
+
+  public boolean isDropRecordOnPartitionMismatch() {
+    return _dropRecordOnPartitionMismatch;
+  }
+
+  public void setDropRecordOnPartitionMismatch(boolean dropRecordOnPartitionMismatch) {
+    _dropRecordOnPartitionMismatch = dropRecordOnPartitionMismatch;
+  }
+
+  public Enablement getOomProtection() {
+    return _oomProtection == null ? Enablement.DEFAULT : _oomProtection;
+  }
+
+  public void setOomProtection(@Nullable Enablement oomProtection) {
+    _oomProtection = oomProtection == null ? Enablement.DEFAULT : oomProtection;
   }
 }

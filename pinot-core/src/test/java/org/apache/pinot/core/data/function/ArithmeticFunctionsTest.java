@@ -22,16 +22,14 @@ import com.google.common.collect.Lists;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
-import org.apache.pinot.segment.local.function.InbuiltFunctionEvaluator;
+import org.apache.pinot.common.evaluator.InbuiltFunctionEvaluator;
 import org.apache.pinot.spi.data.readers.GenericRow;
 import org.testng.Assert;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 
-/**
- * Tests the arithmetic scalar transform functions
- */
+/// Tests the arithmetic scalar transform functions
 public class ArithmeticFunctionsTest {
 
   private void testFunction(String functionExpression, List<String> expectedArguments, GenericRow row,
@@ -326,6 +324,30 @@ public class ArithmeticFunctionsTest {
       inputs.add(new Object[]{"roundDecimal(a, 1)", Lists.newArrayList("a"), row, 9.5});
       inputs.add(new Object[]{"roundDecimal(a, 2)", Lists.newArrayList("a"), row, 9.46});
       inputs.add(new Object[]{"roundDecimal(a, 3)", Lists.newArrayList("a"), row, 9.46});
+    }
+    {
+      GenericRow row = new GenericRow();
+      row.putValue("a", Double.NEGATIVE_INFINITY);
+      inputs.add(new Object[]{"roundDecimal(a)", Lists.newArrayList("a"), row, Double.NEGATIVE_INFINITY});
+      inputs.add(new Object[]{"roundDecimal(a, 1)", Lists.newArrayList("a"), row, Double.NEGATIVE_INFINITY});
+      inputs.add(new Object[]{"roundDecimal(a, 2)", Lists.newArrayList("a"), row, Double.NEGATIVE_INFINITY});
+      inputs.add(new Object[]{"roundDecimal(a, 3)", Lists.newArrayList("a"), row, Double.NEGATIVE_INFINITY});
+    }
+    {
+      GenericRow row = new GenericRow();
+      row.putValue("a", Double.POSITIVE_INFINITY);
+      inputs.add(new Object[]{"roundDecimal(a)", Lists.newArrayList("a"), row, Double.POSITIVE_INFINITY});
+      inputs.add(new Object[]{"roundDecimal(a, 1)", Lists.newArrayList("a"), row, Double.POSITIVE_INFINITY});
+      inputs.add(new Object[]{"roundDecimal(a, 2)", Lists.newArrayList("a"), row, Double.POSITIVE_INFINITY});
+      inputs.add(new Object[]{"roundDecimal(a, 3)", Lists.newArrayList("a"), row, Double.POSITIVE_INFINITY});
+    }
+    {
+      GenericRow row = new GenericRow();
+      row.putValue("a", Double.NaN);
+      inputs.add(new Object[]{"roundDecimal(a)", Lists.newArrayList("a"), row, Double.NaN});
+      inputs.add(new Object[]{"roundDecimal(a, 1)", Lists.newArrayList("a"), row, Double.NaN});
+      inputs.add(new Object[]{"roundDecimal(a, 2)", Lists.newArrayList("a"), row, Double.NaN});
+      inputs.add(new Object[]{"roundDecimal(a, 3)", Lists.newArrayList("a"), row, Double.NaN});
     }
     // test truncate
     {

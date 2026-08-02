@@ -44,14 +44,12 @@ import org.apache.pinot.core.auth.ManualAuthorization;
 import org.glassfish.grizzly.http.server.Request;
 
 
-/**
- * A container filter class responsible for automatic authentication of REST endpoints. Any rest endpoints annotated
- * with {@link Authenticate} annotation, will go through authentication.
- */
+/// A container filter class responsible for automatic authentication of REST endpoints. Any rest endpoints annotated
+/// with [Authenticate] annotation, will go through authentication.
 @javax.ws.rs.ext.Provider
 public class AuthenticationFilter implements ContainerRequestFilter {
   private static final Set<String> UNPROTECTED_PATHS =
-      new HashSet<>(Arrays.asList("", "help", "auth/info", "auth/verify", "health"));
+      new HashSet<>(Arrays.asList("", "help", "auth/info", "auth/verify", "auth/verify/v2", "health"));
   private static final String KEY_TABLE_NAME = "tableName";
   private static final String KEY_TABLE_NAME_WITH_TYPE = "tableNameWithType";
   private static final String KEY_SCHEMA_NAME = "schemaName";

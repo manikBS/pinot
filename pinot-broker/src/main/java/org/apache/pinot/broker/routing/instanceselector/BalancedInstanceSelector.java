@@ -18,15 +18,10 @@
  */
 package org.apache.pinot.broker.routing.instanceselector;
 
-import java.time.Clock;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import javax.annotation.Nullable;
 import org.apache.commons.lang3.tuple.Pair;
-import org.apache.helix.store.zk.ZkHelixPropertyStore;
-import org.apache.helix.zookeeper.datamodel.ZNRecord;
-import org.apache.pinot.broker.routing.adaptiveserverselector.AdaptiveServerSelector;
 import org.apache.pinot.broker.routing.adaptiveserverselector.ServerSelectionContext;
 import org.apache.pinot.common.metrics.BrokerMeter;
 import org.apache.pinot.common.metrics.BrokerMetrics;
@@ -46,17 +41,10 @@ import org.apache.pinot.common.utils.HashUtil;
 /// If AdaptiveServerSelection is disabled, the selection algorithm will always evenly distribute the traffic to all
 /// replicas of each segment, and will try to select different replica id for each segment. The algorithm is very
 /// light-weight and will do best effort to balance the number of segments served by each selected server instance.
-///
 public class BalancedInstanceSelector extends BaseInstanceSelector {
 
-  public BalancedInstanceSelector(String tableNameWithType, ZkHelixPropertyStore<ZNRecord> propertyStore,
-      BrokerMetrics brokerMetrics, @Nullable AdaptiveServerSelector adaptiveServerSelector, Clock clock,
-      InstanceSelectorConfig config) {
-    super(tableNameWithType, propertyStore, brokerMetrics, adaptiveServerSelector, clock, config);
-  }
-
   @Override
-  Pair<Map<String, String>, Map<String, String>> select(List<String> segments, int requestId,
+  public Pair<Map<String, String>, Map<String, String>> select(List<String> segments, int requestId,
       SegmentStates segmentStates, Map<String, String> queryOptions) {
     Map<String, String> segmentToSelectedInstanceMap = new HashMap<>(HashUtil.getHashMapCapacity(segments.size()));
     // No need to adjust this map per total segment numbers, as optional segments should be empty most of the time.
@@ -97,7 +85,7 @@ public class BalancedInstanceSelector extends BaseInstanceSelector {
 
     for (Map.Entry<Integer, Integer> entry : poolToSegmentCount.entrySet()) {
       _brokerMetrics.addMeteredValue(BrokerMeter.POOL_SEG_QUERIES, entry.getValue(),
-        BrokerMetrics.getTagForPreferredPool(queryOptions), String.valueOf(entry.getKey()));
+          BrokerMetrics.getTagForPreferredPool(queryOptions), String.valueOf(entry.getKey()));
     }
     return Pair.of(segmentToSelectedInstanceMap, optionalSegmentToInstanceMap);
   }

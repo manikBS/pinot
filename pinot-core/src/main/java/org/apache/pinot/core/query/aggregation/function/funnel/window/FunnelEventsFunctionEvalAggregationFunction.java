@@ -39,6 +39,7 @@ import org.apache.pinot.core.query.aggregation.function.funnel.FunnelStepEventWi
 import org.apache.pinot.core.query.aggregation.groupby.GroupByResultHolder;
 import org.apache.pinot.core.query.aggregation.groupby.ObjectGroupByResultHolder;
 import org.apache.pinot.segment.spi.AggregationFunctionType;
+import org.apache.pinot.spi.query.QueryThreadContext;
 
 
 public class FunnelEventsFunctionEvalAggregationFunction
@@ -385,22 +386,23 @@ public class FunnelEventsFunctionEvalAggregationFunction
     throw new IllegalArgumentException("Unsupported serialized intermediate result version: " + customObject.getType());
   }
 
-  /**
-   * Fill the sliding window with the events that fall into the window.
-   * Note that the events from stepEvents are dequeued and added to the sliding window.
-   * This method ensure the first event from the sliding window is the first step event.
-   *
-   * @param stepEvents    The priority queue of step events
-   * @param slidingWindow The sliding window with events that fall into the window
-   */
+  /// Fill the sliding window with the events that fall into the window.
+  /// Note that the events from stepEvents are dequeued and added to the sliding window.
+  /// This method ensure the first event from the sliding window is the first step event.
+  ///
+  /// @param stepEvents    The priority queue of step events
+  /// @param slidingWindow The sliding window with events that fall into the window
   protected void fillWindow(PriorityQueue<FunnelStepEventWithExtraFields> stepEvents,
       ArrayDeque<FunnelStepEventWithExtraFields> slidingWindow) {
     // Ensure for the sliding window, the first event is the first step
+    int numEventsProcessed = 0;
     while ((!slidingWindow.isEmpty()) && slidingWindow.peek().getFunnelStepEvent().getStep() != 0) {
       slidingWindow.pollFirst();
     }
     if (slidingWindow.isEmpty()) {
       while (!stepEvents.isEmpty() && stepEvents.peek().getFunnelStepEvent().getStep() != 0) {
+        QueryThreadContext.checkTerminationAndSampleUsagePeriodically(numEventsProcessed++,
+            "FunnelEventsFunctionEvalAggregationFunction#fillWindow");
         stepEvents.poll();
       }
       if (stepEvents.isEmpty()) {
@@ -412,6 +414,8 @@ public class FunnelEventsFunctionEvalAggregationFunction
     long windowStart = slidingWindow.peek().getFunnelStepEvent().getTimestamp();
     long windowEnd = windowStart + _windowSize;
     while (!stepEvents.isEmpty() && (stepEvents.peek().getFunnelStepEvent().getTimestamp() < windowEnd)) {
+      QueryThreadContext.checkTerminationAndSampleUsagePeriodically(numEventsProcessed++,
+          "FunnelEventsFunctionEvalAggregationFunction#fillWindow");
       if (_maxStepDuration > 0) {
         // When maxStepDuration > 0, we need to check if the event_to_add has a timestamp within the max duration
         // from the last event in the sliding window. If not, we break the loop.
@@ -464,7 +468,10 @@ public class FunnelEventsFunctionEvalAggregationFunction
 
       int maxStep = 0;
       long previousTimestamp = -1;
+      int numEventsProcessed = 0;
       for (FunnelStepEventWithExtraFields event : slidingWindow) {
+        QueryThreadContext.checkTerminationAndSampleUsagePeriodically(numEventsProcessed++,
+            "FunnelEventsFunctionEvalAggregationFunction#extractFinalResult");
         int currentEventStep = event.getFunnelStepEvent().getStep();
         // If the same condition holds for the sequence of events, then such repeating event interrupts further
         // processing.

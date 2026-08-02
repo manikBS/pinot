@@ -81,7 +81,9 @@ public class DataBlockBuilder {
     Object[] nullPlaceholders = new Object[numColumns];
     for (int colId = 0; colId < numColumns; colId++) {
       nullBitmaps[colId] = new RoaringBitmap();
-      nullPlaceholders[colId] = storedTypes[colId].getNullPlaceholder();
+      // Resolved on the logical type, not the stored type: UUID overrides getNullPlaceholder() to return the nil
+      // UUID, whereas its stored type BYTES would yield a zero-length placeholder that is not a valid UUID.
+      nullPlaceholders[colId] = dataSchema.getColumnDataType(colId).getNullPlaceholder();
     }
     int nullFixedBytes = numColumns * Integer.BYTES * 2;
     int rowSizeInBytes = calculateBytesPerRow(dataSchema);
@@ -165,8 +167,14 @@ public class DataBlockBuilder {
             case DOUBLE_ARRAY:
               setColumn(fixedSize, varSize, (double[]) value);
               break;
+            case BIG_DECIMAL_ARRAY:
+              setColumn(fixedSize, varSize, (BigDecimal[]) value);
+              break;
             case STRING_ARRAY:
               setColumn(fixedSize, varSize, (String[]) value, dictionary);
+              break;
+            case BYTES_ARRAY:
+              setColumn(fixedSize, varSize, (ByteArray[]) value);
               break;
             // Null
             case UNKNOWN:
@@ -248,7 +256,11 @@ public class DataBlockBuilder {
       ByteBuffer fixedSize, PagedPinotOutputStream varSize, RoaringBitmap nullBitmap,
       Object2IntOpenHashMap<String> dictionary, @Nullable AggregationFunction aggFunction)
       throws IOException {
-    ColumnDataType storedType = dataSchema.getColumnDataType(colId).getStoredType();
+    // Dispatch on the stored type, but read null placeholders off the logical type: UUID overrides
+    // getNullPlaceholder() to return the nil UUID, whereas its stored type BYTES would yield a zero-length
+    // placeholder that is not a valid UUID. The two agree for every other type (see DataSchemaTest).
+    ColumnDataType columnDataType = dataSchema.getColumnDataType(colId);
+    ColumnDataType storedType = columnDataType.getStoredType();
     int numRows = columns.get(colId).length;
 
     Object[] column = columns.get(colId);
@@ -260,7 +272,7 @@ public class DataBlockBuilder {
     switch (storedType) {
       // Single-value column
       case INT: {
-        int nullPlaceholder = (int) storedType.getNullPlaceholder();
+        int nullPlaceholder = (int) columnDataType.getNullPlaceholder();
         interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
           for (int rowId = start; rowId < end; rowId++) {
             Object value = column[rowId];
@@ -275,7 +287,7 @@ public class DataBlockBuilder {
         break;
       }
       case LONG: {
-        long nullPlaceholder = (long) storedType.getNullPlaceholder();
+        long nullPlaceholder = (long) columnDataType.getNullPlaceholder();
         interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
           for (int rowId = start; rowId < end; rowId++) {
             Object value = column[rowId];
@@ -290,7 +302,7 @@ public class DataBlockBuilder {
         break;
       }
       case FLOAT: {
-        float nullPlaceholder = (float) storedType.getNullPlaceholder();
+        float nullPlaceholder = (float) columnDataType.getNullPlaceholder();
         interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
           for (int rowId = start; rowId < end; rowId++) {
             Object value = column[rowId];
@@ -305,7 +317,7 @@ public class DataBlockBuilder {
         break;
       }
       case DOUBLE: {
-        double nullPlaceholder = (double) storedType.getNullPlaceholder();
+        double nullPlaceholder = (double) columnDataType.getNullPlaceholder();
         interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
           for (int rowId = start; rowId < end; rowId++) {
             Object value = column[rowId];
@@ -320,7 +332,7 @@ public class DataBlockBuilder {
         break;
       }
       case BIG_DECIMAL: {
-        BigDecimal nullPlaceholder = (BigDecimal) storedType.getNullPlaceholder();
+        BigDecimal nullPlaceholder = (BigDecimal) columnDataType.getNullPlaceholder();
         interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
           for (int rowId = start; rowId < end; rowId++) {
             Object value = column[rowId];
@@ -336,10 +348,9 @@ public class DataBlockBuilder {
       }
       case STRING: {
         ToIntFunction<String> didSupplier = k -> dictionary.size();
-        int nullPlaceHolder = dictionary.computeIfAbsent((String) storedType.getNullPlaceholder(), didSupplier);
-
+        int nullPlaceHolder = dictionary.computeIfAbsent((String) columnDataType.getNullPlaceholder(), didSupplier);
         interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
-          for (int rowId = 0; rowId < numRows; rowId++) {
+          for (int rowId = start; rowId < end; rowId++) {
             Object value = column[rowId];
             if (value == null) {
               nullBitmap.add(rowId);
@@ -353,9 +364,9 @@ public class DataBlockBuilder {
         break;
       }
       case BYTES: {
-        ByteArray nullPlaceholder = (ByteArray) storedType.getNullPlaceholder();
+        ByteArray nullPlaceholder = (ByteArray) columnDataType.getNullPlaceholder();
         interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
-          for (int rowId = 0; rowId < numRows; rowId++) {
+          for (int rowId = start; rowId < end; rowId++) {
             Object value = column[rowId];
             if (value == null) {
               nullBitmap.add(rowId);
@@ -368,9 +379,9 @@ public class DataBlockBuilder {
         break;
       }
       case MAP: {
-        Map nullPlaceholder = (Map) storedType.getNullPlaceholder();
+        Map nullPlaceholder = (Map) columnDataType.getNullPlaceholder();
         interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
-          for (int rowId = 0; rowId < numRows; rowId++) {
+          for (int rowId = start; rowId < end; rowId++) {
             Object value = column[rowId];
             if (value == null) {
               nullBitmap.add(rowId);
@@ -384,9 +395,9 @@ public class DataBlockBuilder {
       }
       // Multi-value column
       case INT_ARRAY: {
-        int[] nullPlaceholder = (int[]) storedType.getNullPlaceholder();
+        int[] nullPlaceholder = (int[]) columnDataType.getNullPlaceholder();
         interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
-          for (int rowId = 0; rowId < numRows; rowId++) {
+          for (int rowId = start; rowId < end; rowId++) {
             Object value = column[rowId];
             if (value == null) {
               nullBitmap.add(rowId);
@@ -399,9 +410,9 @@ public class DataBlockBuilder {
         break;
       }
       case LONG_ARRAY: {
-        long[] nullPlaceholder = (long[]) storedType.getNullPlaceholder();
+        long[] nullPlaceholder = (long[]) columnDataType.getNullPlaceholder();
         interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
-          for (int rowId = 0; rowId < numRows; rowId++) {
+          for (int rowId = start; rowId < end; rowId++) {
             Object value = column[rowId];
             if (value == null) {
               nullBitmap.add(rowId);
@@ -414,9 +425,9 @@ public class DataBlockBuilder {
         break;
       }
       case FLOAT_ARRAY: {
-        float[] nullPlaceholder = (float[]) storedType.getNullPlaceholder();
+        float[] nullPlaceholder = (float[]) columnDataType.getNullPlaceholder();
         interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
-          for (int rowId = 0; rowId < numRows; rowId++) {
+          for (int rowId = start; rowId < end; rowId++) {
             Object value = column[rowId];
             if (value == null) {
               nullBitmap.add(rowId);
@@ -429,9 +440,9 @@ public class DataBlockBuilder {
         break;
       }
       case DOUBLE_ARRAY: {
-        double[] nullPlaceholder = (double[]) storedType.getNullPlaceholder();
+        double[] nullPlaceholder = (double[]) columnDataType.getNullPlaceholder();
         interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
-          for (int rowId = 0; rowId < numRows; rowId++) {
+          for (int rowId = start; rowId < end; rowId++) {
             Object value = column[rowId];
             if (value == null) {
               nullBitmap.add(rowId);
@@ -443,10 +454,25 @@ public class DataBlockBuilder {
         });
         break;
       }
-      case STRING_ARRAY: {
-        String[] nullPlaceholder = (String[]) storedType.getNullPlaceholder();
+      case BIG_DECIMAL_ARRAY: {
+        BigDecimal[] nullPlaceholder = (BigDecimal[]) columnDataType.getNullPlaceholder();
         interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
-          for (int rowId = 0; rowId < numRows; rowId++) {
+          for (int rowId = start; rowId < end; rowId++) {
+            Object value = column[rowId];
+            if (value == null) {
+              nullBitmap.add(rowId);
+              setColumn(fixedSize, varSize, nullPlaceholder);
+            } else {
+              setColumn(fixedSize, varSize, (BigDecimal[]) value);
+            }
+          }
+        });
+        break;
+      }
+      case STRING_ARRAY: {
+        String[] nullPlaceholder = (String[]) columnDataType.getNullPlaceholder();
+        interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
+          for (int rowId = start; rowId < end; rowId++) {
             Object value = column[rowId];
             if (value == null) {
               nullBitmap.add(rowId);
@@ -458,11 +484,26 @@ public class DataBlockBuilder {
         });
         break;
       }
+      case BYTES_ARRAY: {
+        ByteArray[] nullPlaceholder = (ByteArray[]) columnDataType.getNullPlaceholder();
+        interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
+          for (int rowId = start; rowId < end; rowId++) {
+            Object value = column[rowId];
+            if (value == null) {
+              nullBitmap.add(rowId);
+              setColumn(fixedSize, varSize, nullPlaceholder);
+            } else {
+              setColumn(fixedSize, varSize, (ByteArray[]) value);
+            }
+          }
+        });
+        break;
+      }
       // Custom intermediate result for aggregation function
       case OBJECT: {
         assert aggFunction != null;
         interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
-          for (int rowId = 0; rowId < numRows; rowId++) {
+          for (int rowId = start; rowId < end; rowId++) {
             Object value = column[rowId];
             if (value == null) {
               setNull(fixedSize, varSize);
@@ -476,7 +517,7 @@ public class DataBlockBuilder {
       // Null
       case UNKNOWN:
         interruptableLoop(0, numRows, interruptableLoopStep, (start, end) -> {
-          for (int rowId = 0; rowId < numRows; rowId++) {
+          for (int rowId = start; rowId < end; rowId++) {
             setNull(fixedSize, varSize);
           }
         });
@@ -586,7 +627,7 @@ public class DataBlockBuilder {
   private static void setColumn(ByteBuffer fixedSize, PagedPinotOutputStream varSize, Map value)
       throws IOException {
     writeVarOffsetInFixed(fixedSize, varSize);
-    byte[] bytes = MapUtils.serializeMap(value);
+    byte[] bytes = MapUtils.serializeMap(value, false);
     fixedSize.putInt(bytes.length);
     varSize.write(bytes);
   }
@@ -627,6 +668,17 @@ public class DataBlockBuilder {
     }
   }
 
+  private static void setColumn(ByteBuffer fixedSize, PagedPinotOutputStream varSize, BigDecimal[] values)
+      throws IOException {
+    writeVarOffsetInFixed(fixedSize, varSize);
+    fixedSize.putInt(values.length);
+    for (BigDecimal value : values) {
+      byte[] bytes = BigDecimalUtils.serialize(value);
+      varSize.writeInt(bytes.length);
+      varSize.write(bytes);
+    }
+  }
+
   private static void setColumn(ByteBuffer fixedSize, PagedPinotOutputStream varSize, String[] values,
       Object2IntOpenHashMap<String> dictionary)
       throws IOException {
@@ -635,6 +687,17 @@ public class DataBlockBuilder {
     for (String value : values) {
       int dictId = dictionary.computeIfAbsent(value, k -> dictionary.size());
       varSize.writeInt(dictId);
+    }
+  }
+
+  private static void setColumn(ByteBuffer fixedSize, PagedPinotOutputStream varSize, ByteArray[] values)
+      throws IOException {
+    writeVarOffsetInFixed(fixedSize, varSize);
+    fixedSize.putInt(values.length);
+    for (ByteArray value : values) {
+      byte[] bytes = value.getBytes();
+      varSize.writeInt(bytes.length);
+      varSize.write(bytes);
     }
   }
 

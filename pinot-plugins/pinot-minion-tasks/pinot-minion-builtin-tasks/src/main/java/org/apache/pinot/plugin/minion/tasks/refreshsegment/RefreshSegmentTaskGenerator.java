@@ -127,8 +127,10 @@ public class RefreshSegmentTaskGenerator extends BaseTaskGenerator {
       }
 
       Map<String, String> configs = new HashMap<>(getBaseTaskConfigs(tableConfig, List.of(segmentName)));
+      configs.putAll(MinionTaskUtils.getPushTaskConfig(tableNameWithType, taskConfigs, _clusterInfoAccessor));
       configs.put(MinionConstants.DOWNLOAD_URL_KEY, segmentZKMetadata.getDownloadUrl());
-      configs.put(MinionConstants.UPLOAD_URL_KEY, _clusterInfoAccessor.getVipUrl() + "/segments");
+      configs.put(MinionConstants.UPLOAD_URL_KEY,
+          _clusterInfoAccessor.getVipUrlForLeadController(tableNameWithType) + "/segments");
       configs.put(MinionConstants.ORIGINAL_SEGMENT_CRC_KEY, String.valueOf(segmentZKMetadata.getCrc()));
       pinotTaskConfigs.add(new PinotTaskConfig(taskType, configs));
       tableNumTasks++;
@@ -139,14 +141,12 @@ public class RefreshSegmentTaskGenerator extends BaseTaskGenerator {
     return pinotTaskConfigs;
   }
 
-  /**
-   * We need not refresh when: There were no tableConfig or schema updates after the last time the segment was
-   * refreshed by this task.
-   *
-   * Note that newly created segments after the latest tableConfig/schema update will still need to be refreshed. This
-   * is because inverted index created is disabled by default during segment generation. This can be added as an
-   * additional check in the future, if required.
-   */
+  /// We need not refresh when: There were no tableConfig or schema updates after the last time the segment was
+  /// refreshed by this task.
+  ///
+  /// Note that newly created segments after the latest tableConfig/schema update will still need to be refreshed. This
+  /// is because inverted index created is disabled by default during segment generation. This can be added as an
+  /// additional check in the future, if required.
   private boolean shouldRefreshSegment(SegmentZKMetadata segmentZKMetadata, TableConfig tableConfig, Stat tableStat,
       Stat schemaStat) {
     String tableNameWithType = tableConfig.getTableName();

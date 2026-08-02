@@ -42,9 +42,7 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
-import org.apache.pinot.segment.local.indexsegment.immutable.ImmutableSegmentLoader;
 import org.apache.pinot.segment.local.segment.creator.impl.text.LuceneTextIndexCreator;
-import org.apache.pinot.segment.local.segment.index.column.PhysicalColumnIndexContainer;
 import org.apache.pinot.segment.local.segment.index.text.TextIndexConfigBuilder;
 import org.apache.pinot.segment.local.segment.store.TextIndexUtils;
 import org.apache.pinot.segment.local.utils.LuceneTextIndexUtils;
@@ -54,18 +52,15 @@ import org.apache.pinot.segment.spi.index.TextIndexConfig.DocIdTranslatorMode;
 import org.apache.pinot.segment.spi.index.reader.TextIndexReader;
 import org.apache.pinot.segment.spi.memory.PinotDataBuffer;
 import org.apache.pinot.segment.spi.store.SegmentDirectoryPaths;
-import org.apache.pinot.spi.config.table.FSTType;
 import org.apache.pinot.spi.config.table.FieldConfig;
 import org.roaringbitmap.buffer.ImmutableRoaringBitmap;
 import org.roaringbitmap.buffer.MutableRoaringBitmap;
 import org.slf4j.LoggerFactory;
 
 
-/**
- * This is used to read/search the Lucene text index.
- * When {@link ImmutableSegmentLoader} loads the segment,
- * it also loads (mmaps) the Lucene text index if the segment has TEXT column(s).
- */
+/// This is used to read/search the Lucene text index.
+/// When [org.apache.pinot.segment.local.indexsegment.immutable.ImmutableSegmentLoader] loads the segment,
+/// it also loads (mmaps) the Lucene text index if the segment has TEXT column(s).
 public class LuceneTextIndexReader implements TextIndexReader {
   private static final org.slf4j.Logger LOGGER = LoggerFactory.getLogger(LuceneTextIndexReader.class);
 
@@ -119,32 +114,27 @@ public class LuceneTextIndexReader implements TextIndexReader {
     }
   }
 
-  /**
-   * As part of loading the segment in ImmutableSegmentLoader,
-   * we load the text index (per column if it exists) and store
-   * the reference in {@link PhysicalColumnIndexContainer}
-   * similar to how it is done for other types of indexes.
-   *
-   * @param column   column name
-   * @param indexDir segment index directory
-   * @param numDocs  number of documents in the segment
-   */
+  /// As part of loading the segment in ImmutableSegmentLoader,
+  /// we load the text index (per column if it exists) and store
+  /// the reference in [org.apache.pinot.segment.local.segment.index.column.PhysicalColumnIndexContainer]
+  /// similar to how it is done for other types of indexes.
+  ///
+  /// @param column   column name
+  /// @param indexDir segment index directory
+  /// @param numDocs  number of documents in the segment
   public LuceneTextIndexReader(String column, File indexDir, int numDocs,
       @Nullable Map<String, String> textIndexProperties) {
-    this(column, indexDir, numDocs,
-        new TextIndexConfigBuilder(FSTType.LUCENE).withProperties(textIndexProperties).build());
+    this(column, indexDir, numDocs, new TextIndexConfigBuilder().withProperties(textIndexProperties).build());
   }
 
-  /**
-   * Buffer-based constructor for reading Lucene text index from a combined buffer.
-   * This constructor creates a Lucene Directory from a PinotDataBuffer containing
-   * all the text index files in a combined format.
-   *
-   * @param column the column name
-   * @param indexBuffer the buffer containing combined text index data
-   * @param numDocs number of documents in the segment
-   * @param config text index configuration
-   */
+  /// Buffer-based constructor for reading Lucene text index from a combined buffer.
+  /// This constructor creates a Lucene Directory from a PinotDataBuffer containing
+  /// all the text index files in a combined format.
+  ///
+  /// @param column the column name
+  /// @param indexBuffer the buffer containing combined text index data
+  /// @param numDocs number of documents in the segment
+  /// @param config text index configuration
   public LuceneTextIndexReader(String column, PinotDataBuffer indexBuffer, int numDocs, TextIndexConfig config) {
     _column = column;
     try {
@@ -177,7 +167,10 @@ public class LuceneTextIndexReader implements TextIndexReader {
       }
       PinotDataBuffer docIdMappingBuffer = LuceneTextIndexBufferReader.extractDocIdMappingBuffer(indexBuffer, column);
       // Initialize docId translator
+      long startTime = System.currentTimeMillis();
       _docIdTranslator = createDocIdTranslator(docIdMappingBuffer, config, numDocs);
+      LOGGER.info("Time taken to create docIdTranslator for column {}: {} ms", column,
+          System.currentTimeMillis() - startTime);
       // Initialize analyzer and query parser
       _analyzer = TextIndexUtils.getAnalyzer(config);
       _queryParserClass = config.getLuceneQueryParserClass();
@@ -191,20 +184,18 @@ public class LuceneTextIndexReader implements TextIndexReader {
     }
   }
 
-  /**
-   * CASE 1: If IndexLoadingConfig specifies a segment version to load and if it is different then
-   * the on-disk version of the segment, then {@link ImmutableSegmentLoader}
-   * will take care of up-converting the on-disk segment to v3 before load. The converter
-   * already has support for converting v1 text index to v3. So the text index can be
-   * loaded from segmentIndexDir/v3/ since v3 sub-directory would have already been created
-   *
-   * CASE 2: However, if IndexLoadingConfig doesn't specify the segment version to load or if the specified
-   * version is same as the on-disk version of the segment, then ImmutableSegmentLoader will load
-   * whatever the version of segment is on disk.
-   *
-   * @param segmentIndexDir top-level segment index directory
-   * @return text index file
-   */
+  /// CASE 1: If IndexLoadingConfig specifies a segment version to load and if it is different then the on-disk
+  /// version of the segment, then [org.apache.pinot.segment.local.indexsegment.immutable.ImmutableSegmentLoader]
+  /// will take care of up-converting the on-disk segment to v3 before load. The converter already has support for
+  /// converting v1 text index to v3. So the text index can be loaded from segmentIndexDir/v3/ since v3 sub-directory
+  /// would have already been created
+  ///
+  /// CASE 2: However, if IndexLoadingConfig doesn't specify the segment version to load or if the specified
+  /// version is same as the on-disk version of the segment, then ImmutableSegmentLoader will load
+  /// whatever the version of segment is on disk.
+  ///
+  /// @param segmentIndexDir top-level segment index directory
+  /// @return text index file
   private File getTextIndexFile(File segmentIndexDir) {
     // will return null if file does not exist
     File file = SegmentDirectoryPaths.findTextIndexIndexFile(segmentIndexDir, _column);
@@ -281,13 +272,11 @@ public class LuceneTextIndexReader implements TextIndexReader {
     }
   }
 
-  /**
-   * When we destroy the loaded ImmutableSegment, all the indexes
-   * (for each column) are destroyed and as part of that
-   * we release the text index
-   *
-   * @throws IOException
-   */
+  /// When we destroy the loaded ImmutableSegment, all the indexes
+  /// (for each column) are destroyed and as part of that
+  /// we release the text index
+  ///
+  /// @throws IOException
   @Override
   public void close()
       throws IOException {
@@ -297,9 +286,7 @@ public class LuceneTextIndexReader implements TextIndexReader {
     _analyzer.close();
   }
 
-  /**
-   * Updates TextIndexConfig from Properties object
-   */
+  /// Updates TextIndexConfig from Properties object
   private TextIndexConfig updateConfigFromProperties(Properties properties, TextIndexConfig config) {
     TextIndexConfigBuilder builder = new TextIndexConfigBuilder(config);
 
@@ -435,9 +422,7 @@ public class LuceneTextIndexReader implements TextIndexReader {
     }
   }
 
-  /**
-   * Creates docId translator from buffer
-   */
+  /// Creates docId translator from buffer
   private DocIdTranslator createDocIdTranslator(PinotDataBuffer docIdMappingBuffer, TextIndexConfig config, int numDocs)
       throws IOException {
     if (config.getDocIdTranslatorMode() == DocIdTranslatorMode.Skip) {
@@ -446,9 +431,15 @@ public class LuceneTextIndexReader implements TextIndexReader {
     }
 
     if (docIdMappingBuffer != null) {
-      return new DefaultDocIdTranslator(docIdMappingBuffer);
+      // Ensure the buffer is in little endian format as expected by DefaultDocIdTranslator
+      // Create a view with little endian byte order if the buffer is not already in little endian
+      PinotDataBuffer littleEndianBuffer = docIdMappingBuffer.order() == ByteOrder.LITTLE_ENDIAN
+          ? docIdMappingBuffer
+          : docIdMappingBuffer.view(0, docIdMappingBuffer.size(), ByteOrder.LITTLE_ENDIAN);
+      return new DefaultDocIdTranslator(littleEndianBuffer);
     }
 
+    LOGGER.info("building doc id mapping for text index column: {}", _column);
     // Create a new buffer and populate it
     int length = Integer.BYTES * numDocs;
     String desc = "Text index docId mapping buffer: " + _column;

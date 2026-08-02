@@ -48,6 +48,7 @@ import org.apache.pinot.segment.local.indexsegment.immutable.ImmutableSegmentLoa
 import org.apache.pinot.segment.local.segment.creator.impl.SegmentIndexCreationDriverImpl;
 import org.apache.pinot.segment.local.segment.readers.GenericRowRecordReader;
 import org.apache.pinot.segment.local.utils.SegmentLocks;
+import org.apache.pinot.segment.local.utils.ServerReloadJobStatusCache;
 import org.apache.pinot.segment.spi.ImmutableSegment;
 import org.apache.pinot.segment.spi.creator.SegmentGeneratorConfig;
 import org.apache.pinot.segment.spi.index.reader.NullValueVectorReader;
@@ -78,9 +79,7 @@ import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
 
-/**
- * Class for testing segment generation with byte[] data type.
- */
+/// Class for testing segment generation with byte\[\] data type.
 public class SegmentWithNullValueVectorTest {
   private static final File TEMP_DIR = new File(FileUtils.getTempDirectory(), "SegmentWithNullValueVectorTest");
   private static final String SEGMENT_NAME = "testSegment";
@@ -110,11 +109,9 @@ public class SegmentWithNullValueVectorTest {
   private long _nullIntKeyCount = 0;
   private long _longKeyCount = 0;
 
-  /**
-   * Setup to build a segment with raw indexes (no-dictionary) of various data types.
-   *
-   * @throws Exception
-   */
+  /// Setup to build a segment with raw indexes (no-dictionary) of various data types.
+  ///
+  /// @throws Exception
   @BeforeClass
   public void setup()
       throws Exception {
@@ -140,7 +137,8 @@ public class SegmentWithNullValueVectorTest {
     InstanceDataManagerConfig instanceDataManagerConfig = mock(InstanceDataManagerConfig.class);
     when(instanceDataManagerConfig.getInstanceDataDir()).thenReturn(TEMP_DIR.getAbsolutePath());
     TableDataManagerProvider tableDataManagerProvider = new DefaultTableDataManagerProvider();
-    tableDataManagerProvider.init(instanceDataManagerConfig, mock(HelixManager.class), new SegmentLocks(), null);
+    tableDataManagerProvider.init(instanceDataManagerConfig, mock(HelixManager.class), new SegmentLocks(), null,
+        mock(ServerReloadJobStatusCache.class));
     TableDataManager tableDataManager = tableDataManagerProvider.getTableDataManager(tableConfig, _schema);
     tableDataManager.start();
     tableDataManager.addSegment(_segment);
@@ -155,12 +153,10 @@ public class SegmentWithNullValueVectorTest {
     _queryExecutor.init(new PinotConfiguration(queryExecutorConfig), _instanceDataManager, ServerMetrics.get());
   }
 
-  /**
-   * Helper method to build a segment containing a single valued string column with RAW (no-dictionary) index.
-   *
-   * @return Array of string values for the rows in the generated index.
-   * @throws Exception
-   */
+  /// Helper method to build a segment containing a single valued string column with RAW (no-dictionary) index.
+  ///
+  /// @return Array of string values for the rows in the generated index.
+  /// @throws Exception
   private void buildIndex(TableConfig tableConfig, Schema schema)
       throws Exception {
     SegmentGeneratorConfig config = new SegmentGeneratorConfig(tableConfig, schema);
@@ -274,9 +270,7 @@ public class SegmentWithNullValueVectorTest {
     return new ServerQueryRequest(instanceRequest, ServerMetrics.get(), System.currentTimeMillis());
   }
 
-  /**
-   * Clean up after test
-   */
+  /// Clean up after test
   @AfterClass
   public void cleanup()
       throws IOException {

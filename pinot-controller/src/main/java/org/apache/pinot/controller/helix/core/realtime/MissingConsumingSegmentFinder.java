@@ -23,7 +23,6 @@ import com.google.common.base.Preconditions;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,6 +40,7 @@ import org.apache.pinot.common.utils.LLCSegmentName;
 import org.apache.pinot.controller.helix.core.PinotTableIdealStateBuilder;
 import org.apache.pinot.spi.config.table.PauseState;
 import org.apache.pinot.spi.stream.OffsetCriteria;
+import org.apache.pinot.spi.stream.PartitionGroupMetadata;
 import org.apache.pinot.spi.stream.StreamConfig;
 import org.apache.pinot.spi.stream.StreamConsumerFactoryProvider;
 import org.apache.pinot.spi.stream.StreamPartitionMsgOffset;
@@ -51,13 +51,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/**
- * For a given table, this class finds out if there is any partition group for which there's no consuming segment in
- * ideal state. If so, it emits three metrics:
- *   - Total number of partitions with missing consuming segments including
- *   - Number of newly added partitions for which there's no consuming segment (there's no completed segment either)
- *   - Maximum duration (in minutes) that a partition hasn't had a consuming segment
- */
+/// For a given table, this class finds out if there is any partition group for which there's no consuming segment in
+/// ideal state. If so, it emits three metrics:
+///   - Total number of partitions with missing consuming segments including
+///   - Number of newly added partitions for which there's no consuming segment (there's no completed segment either)
+///   - Maximum duration (in minutes) that a partition hasn't had a consuming segment
 public class MissingConsumingSegmentFinder {
   private static final Logger LOGGER = LoggerFactory.getLogger(MissingConsumingSegmentFinder.class);
 
@@ -84,10 +82,12 @@ public class MissingConsumingSegmentFinder {
     });
     try {
       PauseState pauseState = PinotLLCRealtimeSegmentManager.extractTablePauseState(idealState);
-      PinotTableIdealStateBuilder.getPartitionGroupMetadataList(streamConfigs, Collections.emptyList(),
+      PinotTableIdealStateBuilder.getStreamMetadataList(streamConfigs, List.of(),
               pauseState == null ? new ArrayList<>() : pauseState.getIndexOfInactiveTopics(), false)
-          .forEach(metadata -> {
-            _partitionGroupIdToLargestStreamOffsetMap.put(metadata.getPartitionGroupId(), metadata.getStartOffset());
+          .forEach(streamMetadata -> {
+            for (PartitionGroupMetadata metadata : streamMetadata.getPartitionGroupMetadataList()) {
+              _partitionGroupIdToLargestStreamOffsetMap.put(metadata.getPartitionGroupId(), metadata.getStartOffset());
+            }
           });
     } catch (Exception e) {
       LOGGER.warn("Problem encountered in fetching stream metadata for topics: {} of table: {}. "

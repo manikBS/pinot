@@ -29,6 +29,7 @@ import org.apache.pinot.core.operator.docidsets.EmptyDocIdSet;
 import org.apache.pinot.core.operator.docidsets.MatchAllDocIdSet;
 import org.apache.pinot.core.operator.docidsets.NotDocIdSet;
 import org.apache.pinot.core.operator.docidsets.OrDocIdSet;
+import org.apache.pinot.core.operator.docidsets.ShortCircuitingDocIdSet;
 import org.apache.pinot.spi.trace.Tracing;
 import org.roaringbitmap.buffer.BufferFastAggregation;
 import org.roaringbitmap.buffer.ImmutableRoaringBitmap;
@@ -51,8 +52,21 @@ public class OrFilterOperator extends BaseFilterOperator {
   protected BlockDocIdSet getTrues() {
     Tracing.activeRecording().setNumChildren(_filterOperators.size());
     List<BlockDocIdSet> blockDocIdSets = new ArrayList<>(_filterOperators.size());
+    long totalEntriesScanned = 0L;
     for (BaseFilterOperator filterOperator : _filterOperators) {
-      blockDocIdSets.add(filterOperator.getTrues());
+      BlockDocIdSet blockDocIdSet = filterOperator.getTrues();
+      BlockDocIdSet optimizedDocIdSet = blockDocIdSet.getOptimizedDocIdSet();
+      totalEntriesScanned += blockDocIdSet.getNumEntriesScannedInFilter();
+      if (optimizedDocIdSet instanceof MatchAllDocIdSet) {
+        return new MatchAllDocIdSet(_numDocs);
+      }
+      if (optimizedDocIdSet instanceof EmptyDocIdSet) {
+        continue;
+      }
+      blockDocIdSets.add(optimizedDocIdSet);
+    }
+    if (blockDocIdSets.isEmpty()) {
+      return new ShortCircuitingDocIdSet(totalEntriesScanned);
     }
     return new OrDocIdSet(blockDocIdSets, _numDocs);
   }
@@ -98,11 +112,7 @@ public class OrFilterOperator extends BaseFilterOperator {
 
   @Override
   public boolean canOptimizeCount() {
-    boolean allChildrenProduceBitmaps = true;
-    for (BaseFilterOperator child : _filterOperators) {
-      allChildrenProduceBitmaps &= child.canProduceBitmaps();
-    }
-    return allChildrenProduceBitmaps;
+    return canProduceBitmaps();
   }
 
   @Override
@@ -115,5 +125,24 @@ public class OrFilterOperator extends BaseFilterOperator {
       bitmaps[i] = _filterOperators.get(i).getBitmaps().reduce();
     }
     return BufferFastAggregation.orCardinality(bitmaps);
+  }
+
+  @Override
+  public boolean canProduceBitmaps() {
+    for (BaseFilterOperator child : _filterOperators) {
+      if (!child.canProduceBitmaps()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  @Override
+  public BitmapCollection getBitmaps() {
+    ImmutableRoaringBitmap[] bitmaps = new ImmutableRoaringBitmap[_filterOperators.size()];
+    for (int i = 0; i < _filterOperators.size(); i++) {
+      bitmaps[i] = _filterOperators.get(i).getBitmaps().reduce();
+    }
+    return new BitmapCollection(_numDocs, false, BufferFastAggregation.or(bitmaps));
   }
 }

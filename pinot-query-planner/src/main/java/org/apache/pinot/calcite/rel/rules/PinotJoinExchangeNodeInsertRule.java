@@ -28,15 +28,14 @@ import org.apache.calcite.rel.RelDistributions;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Join;
 import org.apache.calcite.rel.core.JoinInfo;
+import org.apache.calcite.rel.core.JoinRelType;
 import org.apache.calcite.rel.logical.LogicalAsofJoin;
 import org.apache.calcite.tools.RelBuilderFactory;
 import org.apache.pinot.calcite.rel.hint.PinotHintOptions;
 import org.apache.pinot.calcite.rel.logical.PinotLogicalExchange;
 
 
-/**
- * Special rule for Pinot, this rule is fixed to always insert exchange after JOIN node.
- */
+/// Special rule for Pinot, this rule is fixed to always insert exchange after JOIN node.
 public class PinotJoinExchangeNodeInsertRule extends RelOptRule {
   public static final PinotJoinExchangeNodeInsertRule INSTANCE =
       new PinotJoinExchangeNodeInsertRule(PinotRuleUtils.PINOT_REL_FACTORY);
@@ -78,21 +77,24 @@ public class PinotJoinExchangeNodeInsertRule extends RelOptRule {
       Preconditions.checkArgument(rightDistributionType == null,
           "Right distribution type hint is not supported for lookup join");
       newRight = right;
+    } else if (joinInfo.leftKeys.isEmpty() && join.getJoinType() == JoinRelType.FULL
+        && leftDistributionType == null && rightDistributionType == null) {
+      // FULL OUTER JOIN with no equi keys: use hash with empty key to explicitly route all data to one destination.
+      // DispatchablePlanVisitor sets requireSingleton on the join stage so WorkerManager picks a single random
+      // worker, avoiding hotspots.
+      newLeft = PinotLogicalExchange.create(left, RelDistributions.hash(List.of()));
+      newRight = PinotLogicalExchange.create(right, RelDistributions.hash(List.of()));
     } else {
       // Hash join
       // Force pre-partitioned exchange when colocated join hint is provided
       Boolean prePartitioned = PinotHintOptions.JoinHintOptions.isColocatedByJoinKeys(join);
       // TODO: Validate if the configured distribution types are valid
       if (leftDistributionType == null) {
-        // By default, hash distribute the left side if there are join keys, otherwise randomly distribute
-        leftDistributionType = !joinInfo.leftKeys.isEmpty() ? PinotHintOptions.DistributionType.HASH
-            : PinotHintOptions.DistributionType.RANDOM;
+        leftDistributionType = inferLeftDistributionType(joinInfo, join.getJoinType());
       }
       newLeft = createExchangeForHashJoin(leftDistributionType, joinInfo.leftKeys, left, prePartitioned);
       if (rightDistributionType == null) {
-        // By default, hash distribute the right side if there are join keys, otherwise broadcast
-        rightDistributionType = !joinInfo.rightKeys.isEmpty() ? PinotHintOptions.DistributionType.HASH
-            : PinotHintOptions.DistributionType.BROADCAST;
+        rightDistributionType = inferRightDistributionType(joinInfo, join.getJoinType());
       }
       newRight = createExchangeForHashJoin(rightDistributionType, joinInfo.rightKeys, right, prePartitioned);
     }
@@ -123,6 +125,32 @@ public class PinotJoinExchangeNodeInsertRule extends RelOptRule {
       default:
         throw new IllegalArgumentException("Unsupported distribution type: " + distributionType + " for lookup join");
     }
+  }
+
+  /// For non-equi RIGHT JOINs (no equi keys), the default RANDOM(left)+BROADCAST(right) is incorrect because each
+  /// worker independently tracks matched right rows via a local BitSet. Workers that receive only a subset of left rows
+  /// will incorrectly emit right rows as unmatched. Invert to BROADCAST(left)+RANDOM(right) so each worker has the
+  /// full left table and can correctly determine which of its local right rows are unmatched.
+  private static PinotHintOptions.DistributionType inferLeftDistributionType(JoinInfo joinInfo,
+      JoinRelType joinType) {
+    if (!joinInfo.leftKeys.isEmpty()) {
+      return PinotHintOptions.DistributionType.HASH;
+    }
+    if (joinType == JoinRelType.RIGHT) {
+      return PinotHintOptions.DistributionType.BROADCAST;
+    }
+    return PinotHintOptions.DistributionType.RANDOM;
+  }
+
+  private static PinotHintOptions.DistributionType inferRightDistributionType(JoinInfo joinInfo,
+      JoinRelType joinType) {
+    if (!joinInfo.rightKeys.isEmpty()) {
+      return PinotHintOptions.DistributionType.HASH;
+    }
+    if (joinType == JoinRelType.RIGHT) {
+      return PinotHintOptions.DistributionType.RANDOM;
+    }
+    return PinotHintOptions.DistributionType.BROADCAST;
   }
 
   private static PinotLogicalExchange createExchangeForHashJoin(PinotHintOptions.DistributionType distributionType,

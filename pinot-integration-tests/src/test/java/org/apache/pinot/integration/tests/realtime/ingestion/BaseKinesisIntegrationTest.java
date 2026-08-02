@@ -27,8 +27,8 @@ import cloud.localstack.docker.command.Command;
 import java.io.File;
 import java.net.URI;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -61,9 +61,7 @@ import software.amazon.awssdk.services.kinesis.model.ShardIteratorType;
 import software.amazon.awssdk.utils.AttributeMap;
 
 
-/**
- * Creates all dependencies (docker image, kinesis server, kinesis client, configs) for all tests requiring kinesis
- */
+/// Creates all dependencies (docker image, kinesis server, kinesis client, configs) for all tests requiring kinesis
 @LocalstackDockerProperties(services = {ServiceName.KINESIS}, imageTag = BaseKinesisIntegrationTest.LOCALSTACK_IMAGE)
 abstract class BaseKinesisIntegrationTest extends BaseClusterIntegrationTest {
 
@@ -116,9 +114,8 @@ abstract class BaseKinesisIntegrationTest extends BaseClusterIntegrationTest {
     LOGGER.warn("Stream " + STREAM_NAME + " being created");
     _kinesisClient.createStream(CreateStreamRequest.builder().streamName(STREAM_NAME).shardCount(numShards).build());
 
-    TestUtils.waitForCondition(aVoid ->
-            KinesisUtils.isKinesisStreamActive(_kinesisClient, STREAM_NAME), 2000L, 60000,
-        "Kinesis stream " + STREAM_NAME + " is not created or is not in active state", true);
+    TestUtils.waitForCondition(aVoid -> KinesisUtils.isKinesisStreamActive(_kinesisClient, STREAM_NAME), 2000L, 60_000L,
+        "Kinesis stream " + STREAM_NAME + " is not created or is not in active state");
   }
 
   protected void deleteStream() {
@@ -128,14 +125,13 @@ abstract class BaseKinesisIntegrationTest extends BaseClusterIntegrationTest {
       return;
     }
     TestUtils.waitForCondition(aVoid -> {
-          try {
-            KinesisUtils.getKinesisStreamStatus(_kinesisClient, STREAM_NAME);
-          } catch (ResourceNotFoundException e) {
-            return true;
-          }
-          return false;
-        }, 2000L, 60000,
-        "Kinesis stream " + STREAM_NAME + " is not deleted", true);
+      try {
+        KinesisUtils.getKinesisStreamStatus(_kinesisClient, STREAM_NAME);
+        return false;
+      } catch (ResourceNotFoundException e) {
+        return true;
+      }
+    }, 2000L, 60_000L, "Kinesis stream " + STREAM_NAME + " is not deleted");
 
     LOGGER.warn("Stream " + STREAM_NAME + " deleted");
   }
@@ -176,7 +172,7 @@ abstract class BaseKinesisIntegrationTest extends BaseClusterIntegrationTest {
   @Override
   public TableConfig createRealtimeTableConfig(File sampleAvroFile) {
     // Calls the super class to create the table config.
-    // Properties like stream configs are overriden in the getStreamConfigs() method.
+    // Properties like stream configs are overridden in the getStreamConfigs() method.
     return super.createRealtimeTableConfig(sampleAvroFile);
   }
 
@@ -222,7 +218,7 @@ abstract class BaseKinesisIntegrationTest extends BaseClusterIntegrationTest {
   private static class DockerInfoCommand extends Command {
 
     public void execute() {
-      String dockerInfo = dockerExe.execute(Collections.singletonList("info"));
+      String dockerInfo = dockerExe.execute(List.of("info"));
 
       if (dockerInfo.toLowerCase().contains("error")) {
         throw new IllegalStateException("Docker daemon is not running!");

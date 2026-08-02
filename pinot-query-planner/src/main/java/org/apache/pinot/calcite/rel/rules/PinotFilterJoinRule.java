@@ -18,7 +18,6 @@
  */
 package org.apache.pinot.calcite.rel.rules;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
 import java.util.ArrayList;
 import java.util.List;
@@ -41,9 +40,7 @@ import org.apache.pinot.calcite.rel.hint.PinotHintOptions;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
 
-/**
- * Similar to {@link FilterJoinRule} but do not push down filter into right side of lookup join.
- */
+/// Similar to [FilterJoinRule] but do not push down filter into right side of lookup join.
 public abstract class PinotFilterJoinRule<C extends FilterJoinRule.Config> extends FilterJoinRule<C> {
 
   private PinotFilterJoinRule(C config) {
@@ -56,7 +53,7 @@ public abstract class PinotFilterJoinRule<C extends FilterJoinRule.Config> exten
   protected void perform(RelOptRuleCall call, @Nullable Filter filter, Join join) {
     List<RexNode> joinFilters =
         RelOptUtil.conjunctions(join.getCondition());
-    final List<RexNode> origJoinFilters = ImmutableList.copyOf(joinFilters);
+    final List<RexNode> origJoinFilters = List.copyOf(joinFilters);
 
     // If there is only the joinRel,
     // make sure it does not match a cartesian product joinRel
@@ -70,15 +67,16 @@ public abstract class PinotFilterJoinRule<C extends FilterJoinRule.Config> exten
         filter != null
             ? getConjunctions(filter)
             : new ArrayList<>();
-    final ImmutableList<RexNode> origAboveFilters =
-        ImmutableList.copyOf(aboveFilters);
+    final List<RexNode> origAboveFilters =
+        List.copyOf(aboveFilters);
 
     // Simplify Outer Joins
     JoinRelType joinType = join.getJoinType();
     if (config.isSmart()
         && !origAboveFilters.isEmpty()
         && join.getJoinType() != JoinRelType.INNER) {
-      joinType = RelOptUtil.simplifyJoin(join, origAboveFilters, joinType);
+      joinType = RelOptUtil.simplifyJoin(join,
+          com.google.common.collect.ImmutableList.copyOf(origAboveFilters), joinType);
     }
 
     final List<RexNode> leftFilters = new ArrayList<>();
@@ -170,10 +168,9 @@ public abstract class PinotFilterJoinRule<C extends FilterJoinRule.Config> exten
 
     // create the new join node referencing the new children and
     // containing its new join filters (if there are any)
-    final ImmutableList<RelDataType> fieldTypes =
-        ImmutableList.<RelDataType>builder()
-            .addAll(RelOptUtil.getFieldTypeList(leftRel.getRowType()))
-            .addAll(RelOptUtil.getFieldTypeList(rightRel.getRowType())).build();
+    final List<RelDataType> fieldTypes = new ArrayList<>();
+    fieldTypes.addAll(RelOptUtil.getFieldTypeList(leftRel.getRowType()));
+    fieldTypes.addAll(RelOptUtil.getFieldTypeList(rightRel.getRowType()));
     final RexNode joinFilter =
         RexUtil.composeConjunction(rexBuilder,
             RexUtil.fixUp(rexBuilder, joinFilters, fieldTypes));
@@ -235,7 +232,7 @@ public abstract class PinotFilterJoinRule<C extends FilterJoinRule.Config> exten
         new PinotJoinConditionPushRule(JoinConditionPushRuleConfig.DEFAULT);
 
     public static PinotJoinConditionPushRule instanceWithDescription(String description) {
-        return new PinotJoinConditionPushRule(
+      return new PinotJoinConditionPushRule(
             (JoinConditionPushRuleConfig) JoinConditionPushRuleConfig.DEFAULT.withDescription(description));
     }
 

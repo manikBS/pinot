@@ -19,10 +19,8 @@
 package org.apache.pinot.query.runtime.operator.exchange;
 
 import com.google.common.annotations.VisibleForTesting;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
 import org.apache.pinot.core.query.aggregation.function.AggregationFunction;
 import org.apache.pinot.query.mailbox.SendingMailbox;
@@ -31,14 +29,15 @@ import org.apache.pinot.query.planner.partitioning.KeySelector;
 import org.apache.pinot.query.runtime.blocks.BlockSplitter;
 import org.apache.pinot.query.runtime.blocks.MseBlock;
 import org.apache.pinot.query.runtime.blocks.RowHeapDataBlock;
+import org.apache.pinot.spi.query.QueryThreadContext;
 
 
-/**
- * Distributes blocks based on the hash of a key, selected by the specified
- * {@code keySelector}. This will redistribute rows from input blocks (breaking
- * them up if necessary).
- */
+/// Distributes blocks based on the hash of a key, selected by the specified
+/// `keySelector`. This will redistribute rows from input blocks (breaking
+/// them up if necessary).
 class HashExchange extends BlockExchange {
+  private static final String ROUTE_SCOPE = "HashExchange";
+
   private final KeySelector<?> _keySelector;
 
   HashExchange(List<SendingMailbox> sendingMailboxes, KeySelector<?> keySelector, BlockSplitter splitter,
@@ -54,8 +53,7 @@ class HashExchange extends BlockExchange {
 
   @SuppressWarnings({"rawtypes", "unchecked"})
   @Override
-  protected void route(List<SendingMailbox> destinations, MseBlock.Data block)
-      throws IOException, TimeoutException {
+  protected void route(List<SendingMailbox> destinations, MseBlock.Data block) {
     int numMailboxes = destinations.size();
     if (numMailboxes == 1 || _keySelector == EmptyKeySelector.INSTANCE) {
       sendBlock(destinations.get(0), block);
@@ -68,7 +66,9 @@ class HashExchange extends BlockExchange {
     }
     RowHeapDataBlock rowHeapBlock = block.asRowHeap();
     List<Object[]> rows = rowHeapBlock.getRows();
+    int r = 0;
     for (Object[] row : rows) {
+      QueryThreadContext.checkTerminationAndSampleUsagePeriodically(r++, ROUTE_SCOPE);
       int mailboxId = _keySelector.computeHash(row) % numMailboxes;
       mailboxIdToRowsMap[mailboxId].add(row);
     }

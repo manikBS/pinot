@@ -34,16 +34,15 @@ import org.apache.pinot.query.planner.plannode.ProjectNode;
 import org.apache.pinot.query.planner.plannode.SetOpNode;
 import org.apache.pinot.query.planner.plannode.SortNode;
 import org.apache.pinot.query.planner.plannode.TableScanNode;
+import org.apache.pinot.query.planner.plannode.UnnestNode;
 import org.apache.pinot.query.planner.plannode.ValueNode;
 import org.apache.pinot.query.planner.plannode.WindowNode;
 import org.apache.pinot.spi.exception.QueryErrorCode;
 import org.apache.pinot.spi.exception.QueryException;
 
 
-/**
- * This class is used to validate the arrayToMv usage.
- * Only leaf nodes are allowed to use arrayToMv function.
- */
+/// This class is used to validate the arrayToMv usage.
+/// Only leaf nodes are allowed to use arrayToMv function.
 public class ArrayToMvValidationVisitor implements PlanNodeVisitor<Void, Boolean> {
   public static final ArrayToMvValidationVisitor INSTANCE = new ArrayToMvValidationVisitor();
 
@@ -67,6 +66,7 @@ public class ArrayToMvValidationVisitor implements PlanNodeVisitor<Void, Boolean
     return null;
   }
 
+  @Deprecated(forRemoval = true, since = "1.6.0")
   @Override
   public Void visitEnrichedJoin(EnrichedJoinNode node, Boolean isIntermediateStage) {
     visitJoin(node, isIntermediateStage);
@@ -162,6 +162,12 @@ public class ArrayToMvValidationVisitor implements PlanNodeVisitor<Void, Boolean
   @Override
   public Void visitExplained(ExplainedNode node, Boolean isIntermediateStage) {
     node.getInputs().forEach(input -> input.visit(this, isIntermediateStage));
+    return null;
+  }
+
+  @Override
+  public Void visitUnnest(UnnestNode node, Boolean isIntermediateStage) {
+    node.getInputs().forEach(e -> e.visit(this, isIntermediateStage));
     return null;
   }
 

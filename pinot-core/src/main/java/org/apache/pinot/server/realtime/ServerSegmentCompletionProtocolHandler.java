@@ -60,10 +60,8 @@ import org.slf4j.LoggerFactory;
 import static org.apache.pinot.spi.utils.CommonConstants.Server.SegmentCompletionProtocol.*;
 
 
-/**
- * A class that handles sending segment completion protocol requests to the controller and getting
- * back responses
- */
+/// A class that handles sending segment completion protocol requests to the controller and getting
+/// back responses
 // TODO: Use exception based code to handle different types of exceptions.
 public class ServerSegmentCompletionProtocolHandler {
   private static final Logger LOGGER = LoggerFactory.getLogger(ServerSegmentCompletionProtocolHandler.class);
@@ -119,13 +117,18 @@ public class ServerSegmentCompletionProtocolHandler {
   }
 
   public SegmentCompletionProtocol.Response segmentCommitStart(SegmentCompletionProtocol.Request.Params params) {
+    return segmentCommitStart(params, DEFAULT_OTHER_REQUESTS_TIMEOUT);
+  }
+
+  public SegmentCompletionProtocol.Response segmentCommitStart(SegmentCompletionProtocol.Request.Params params,
+      int timeoutMs) {
     SegmentCompletionProtocol.SegmentCommitStartRequest request =
         new SegmentCompletionProtocol.SegmentCommitStartRequest(params);
     String url = createSegmentCompletionUrl(request);
     if (url == null) {
       return SegmentCompletionProtocol.RESP_NOT_SENT;
     }
-    return sendRequest(url);
+    return sendRequest(url, timeoutMs);
   }
 
   // TODO We need to make this work with trusted certificates if the VIP is using https.
@@ -231,11 +234,15 @@ public class ServerSegmentCompletionProtocolHandler {
   }
 
   private SegmentCompletionProtocol.Response sendRequest(String url) {
+    return sendRequest(url, DEFAULT_OTHER_REQUESTS_TIMEOUT);
+  }
+
+  private SegmentCompletionProtocol.Response sendRequest(String url, int timeoutMs) {
     SegmentCompletionProtocol.Response response;
     try {
       String responseStr = _fileUploadDownloadClient
           .sendSegmentCompletionProtocolRequest(new URI(url), AuthProviderUtils.toRequestHeaders(_authProvider), null,
-              DEFAULT_OTHER_REQUESTS_TIMEOUT).getResponse();
+              timeoutMs).getResponse();
       response = SegmentCompletionProtocol.Response.fromJsonString(responseStr);
       LOGGER.info("Controller response {} for {}", response.toJsonString(), url);
       if (response.getStatus().equals(SegmentCompletionProtocol.ControllerResponseStatus.NOT_LEADER)) {
@@ -323,10 +330,8 @@ public class ServerSegmentCompletionProtocolHandler {
     }
   }
 
-  /**
-   * Generate a tar.gz file containing only the metadata files (metadata.properties, creation.meta)
-   * from a given Pinot segment tar.gz file.
-   */
+  /// Generate a tar.gz file containing only the metadata files (metadata.properties, creation.meta)
+  /// from a given Pinot segment tar.gz file.
   private File generateSegmentMetadataTar(File segmentTarFile)
       throws Exception {
     LOGGER.info("Generating segment metadata tar file from segment tar: {}", segmentTarFile.getAbsolutePath());

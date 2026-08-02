@@ -38,15 +38,13 @@ import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 
-/**
- * Unit test for {@link FixedByteChunkSVForwardIndexReader} and {@link FixedByteChunkForwardIndexWriter} classes.
- *
- * This test writes {@link #NUM_VALUES} using {@link FixedByteChunkForwardIndexWriter}. It then reads
- * the values using {@link FixedByteChunkSVForwardIndexReader}, and asserts that what was written is the same as
- * what was read in.
- *
- * Number of docs and docs per chunk are chosen to generate complete as well partial chunks.
- */
+/// Unit test for [FixedByteChunkSVForwardIndexReader] and [FixedByteChunkForwardIndexWriter] classes.
+///
+/// This test writes [#NUM_VALUES] using [FixedByteChunkForwardIndexWriter]. It then reads
+/// the values using [FixedByteChunkSVForwardIndexReader], and asserts that what was written is the same as
+/// what was read in.
+///
+/// Number of docs and docs per chunk are chosen to generate complete as well partial chunks.
 public class FixedByteChunkSVForwardIndexTest implements PinotBuffersAfterMethodCheckRule {
   private static final int NUM_VALUES = 10009;
   private static final int NUM_DOCS_PER_CHUNK = 5003;
@@ -56,6 +54,7 @@ public class FixedByteChunkSVForwardIndexTest implements PinotBuffersAfterMethod
   @DataProvider(name = "combinations")
   public static Object[][] combinations() {
     return Arrays.stream(ChunkCompressionType.values())
+        .filter(t -> t != ChunkCompressionType.DELTA && t != ChunkCompressionType.DELTADELTA)
         .flatMap(chunkCompressionType -> IntStream.of(2, 3, 4)
             .mapToObj(version -> new Object[]{chunkCompressionType, version}))
         .toArray(Object[][]::new);
@@ -325,18 +324,14 @@ public class FixedByteChunkSVForwardIndexTest implements PinotBuffersAfterMethod
     FileUtils.deleteQuietly(outFileEightByte);
   }
 
-  /**
-   * This test ensures that the reader can read in an data file from version 1.
-   */
+  /// This test ensures that the reader can read in an data file from version 1.
   @Test
   public void testBackwardCompatibilityV1()
       throws Exception {
     testBackwardCompatibilityHelper("data/fixedByteSVRDoubles.v1", 10009, 0);
   }
 
-  /**
-   * This test ensures that the reader can read in an data file from version 2.
-   */
+  /// This test ensures that the reader can read in an data file from version 2.
   @Test
   public void testBackwardCompatibilityV2()
       throws Exception {

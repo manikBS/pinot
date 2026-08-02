@@ -29,9 +29,7 @@ import org.apache.pinot.core.query.aggregation.groupby.GroupByResultHolder;
 import org.apache.pinot.segment.spi.AggregationFunctionType;
 
 
-/**
- * Aggregation function to compute the average of distinct values for an MV column.
- */
+/// Aggregation function to compute the average of distinct values for an MV column.
 public class DistinctAvgMVAggregationFunction extends BaseDistinctAggregateAggregationFunction<Double> {
 
   public DistinctAvgMVAggregationFunction(List<ExpressionContext> arguments) {
@@ -41,19 +39,19 @@ public class DistinctAvgMVAggregationFunction extends BaseDistinctAggregateAggre
   @Override
   public void aggregate(int length, AggregationResultHolder aggregationResultHolder,
       Map<ExpressionContext, BlockValSet> blockValSetMap) {
-    mvAggregate(length, aggregationResultHolder, blockValSetMap);
+    mvAggregate(blockValSetMap.get(_expression), length, aggregationResultHolder);
   }
 
   @Override
   public void aggregateGroupBySV(int length, int[] groupKeyArray, GroupByResultHolder groupByResultHolder,
       Map<ExpressionContext, BlockValSet> blockValSetMap) {
-    mvAggregateGroupBySV(length, groupKeyArray, groupByResultHolder, blockValSetMap);
+    mvAggregateGroupBySV(blockValSetMap.get(_expression), length, groupKeyArray, groupByResultHolder);
   }
 
   @Override
   public void aggregateGroupByMV(int length, int[][] groupKeysArray, GroupByResultHolder groupByResultHolder,
       Map<ExpressionContext, BlockValSet> blockValSetMap) {
-    mvAggregateGroupByMV(length, groupKeysArray, groupByResultHolder, blockValSetMap);
+    mvAggregateGroupByMV(blockValSetMap.get(_expression), length, groupKeysArray, groupByResultHolder);
   }
 
   @Override

@@ -19,14 +19,14 @@
 package org.apache.pinot.core.operator.dociditerators;
 
 import java.math.BigDecimal;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
 import javax.annotation.Nullable;
 import org.apache.pinot.core.common.Operator;
-import org.apache.pinot.core.operator.BaseOperator;
+import org.apache.pinot.core.operator.BaseDocIdSetOperator;
 import org.apache.pinot.core.operator.BitmapDocIdSetOperator;
+import org.apache.pinot.core.operator.DocIdOrderedOperator;
 import org.apache.pinot.core.operator.ProjectionOperator;
 import org.apache.pinot.core.operator.ProjectionOperatorUtils;
 import org.apache.pinot.core.operator.blocks.DocIdSetBlock;
@@ -47,10 +47,8 @@ import org.roaringbitmap.buffer.ImmutableRoaringBitmap;
 import org.roaringbitmap.buffer.MutableRoaringBitmap;
 
 
-/**
- * The {@code ExpressionScanDocIdIterator} is the scan-based iterator for ExpressionFilterDocIdSet that can handle
- * filters on the expressions. It leverages the projection operator to batch processing the records block by block.
- */
+/// The `ExpressionScanDocIdIterator` is the scan-based iterator for ExpressionFilterDocIdSet that can handle
+/// filters on the expressions. It leverages the projection operator to batch processing the records block by block.
 public final class ExpressionScanDocIdIterator implements ScanBasedDocIdIterator {
   private final TransformFunction _transformFunction;
   private final PredicateEvaluator _predicateEvaluator;
@@ -127,8 +125,10 @@ public final class ExpressionScanDocIdIterator implements ScanBasedDocIdIterator
   @Override
   public MutableRoaringBitmap applyAnd(BatchIterator batchIterator, OptionalInt firstDoc, OptionalInt lastDoc) {
     IntIterator intIterator = batchIterator.asIntIterator(new int[OPTIMAL_ITERATOR_BATCH_SIZE]);
+    BaseDocIdSetOperator docIdSetOperator =
+        new BitmapDocIdSetOperator(intIterator, _docIdBuffer, DocIdOrderedOperator.DocIdOrder.ASC);
     try (ProjectionOperator projectionOperator = ProjectionOperatorUtils.getProjectionOperator(_dataSourceMap,
-        new BitmapDocIdSetOperator(intIterator, _docIdBuffer), _queryContext)) {
+        docIdSetOperator, _queryContext)) {
       MutableRoaringBitmap matchingDocIds = new MutableRoaringBitmap();
       ProjectionBlock projectionBlock;
       while ((projectionBlock = projectionOperator.nextBlock()) != null) {
@@ -141,7 +141,7 @@ public final class ExpressionScanDocIdIterator implements ScanBasedDocIdIterator
   @Override
   public MutableRoaringBitmap applyAnd(ImmutableRoaringBitmap docIds) {
     try (ProjectionOperator projectionOperator = ProjectionOperatorUtils.getProjectionOperator(_dataSourceMap,
-        new BitmapDocIdSetOperator(docIds, _docIdBuffer), _queryContext)) {
+        new BitmapDocIdSetOperator(docIds, _docIdBuffer, DocIdOrderedOperator.DocIdOrder.ASC), _queryContext)) {
       MutableRoaringBitmap matchingDocIds = new MutableRoaringBitmap();
       ProjectionBlock projectionBlock;
       while ((projectionBlock = projectionOperator.nextBlock()) != null) {
@@ -417,10 +417,8 @@ public final class ExpressionScanDocIdIterator implements ScanBasedDocIdIterator
     return _numEntriesScanned;
   }
 
-  /**
-   * NOTE: This operator contains only one block.
-   */
-  private class RangeDocIdSetOperator extends BaseOperator<DocIdSetBlock> {
+  /// NOTE: This operator contains only one block.
+  private class RangeDocIdSetOperator extends BaseDocIdSetOperator {
     static final String EXPLAIN_NAME = "DOC_ID_SET_RANGE";
 
     DocIdSetBlock _docIdSetBlock;
@@ -447,7 +445,21 @@ public final class ExpressionScanDocIdIterator implements ScanBasedDocIdIterator
 
     @Override
     public List<Operator> getChildOperators() {
-      return Collections.emptyList();
+      return List.of();
+    }
+
+    @Override
+    public boolean isCompatibleWith(DocIdOrder order) {
+      return DocIdOrder.ASC == order;
+    }
+
+    @Override
+    public BaseDocIdSetOperator withOrder(DocIdOrder order)
+        throws UnsupportedOperationException {
+      if (order == DocIdOrder.ASC) {
+        return this;
+      }
+      throw new UnsupportedOperationException(EXPLAIN_NAME + " doesn't support descending order");
     }
   }
 

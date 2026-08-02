@@ -17,12 +17,12 @@
  * under the License.
  */
 package org.apache.pinot.controller.helix.core.rebalance;
-
 import com.fasterxml.jackson.databind.JsonNode;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -33,6 +33,9 @@ import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager;
 import org.apache.pinot.common.assignment.InstanceAssignmentConfigUtils;
 import org.apache.pinot.common.exception.InvalidConfigException;
 import org.apache.pinot.common.restlet.resources.DiskUsageInfo;
+import org.apache.pinot.common.restlet.resources.RebalanceConfig;
+import org.apache.pinot.common.restlet.resources.RebalancePreCheckerResult;
+import org.apache.pinot.common.restlet.resources.RebalanceSummaryResult;
 import org.apache.pinot.controller.helix.core.PinotHelixResourceManager;
 import org.apache.pinot.controller.helix.core.assignment.segment.SegmentAssignmentUtils;
 import org.apache.pinot.controller.util.TableMetadataReader;
@@ -85,7 +88,9 @@ public class DefaultRebalancePreChecker implements RebalancePreChecker {
 
     tableRebalanceLogger.info("Start pre-checks");
 
-    Map<String, RebalancePreCheckerResult> preCheckResult = new HashMap<>();
+    // Right now pre-check items are done sequentially. If pre-check items are to be done in parallel, we should not
+    // use linked hash map but to sort the result in the end
+    Map<String, RebalancePreCheckerResult> preCheckResult = new LinkedHashMap<>();
     // Check for reload status
     preCheckResult.put(NEEDS_RELOAD_STATUS, checkReloadNeededOnServers(tableNameWithType, tableRebalanceLogger));
     // Check whether minimizeDataMovement is set in TableConfig
@@ -104,12 +109,10 @@ public class DefaultRebalancePreChecker implements RebalancePreChecker {
     // Check if all servers involved in the rebalance have enough disk space for rebalance operation.
     // Notice this check could have false positives (disk utilization is subject to change by other operations anytime)
     preCheckResult.put(DISK_UTILIZATION_DURING_REBALANCE,
-        checkDiskUtilization(preCheckContext.getCurrentAssignment(), preCheckContext.getTargetAssignment(),
-            preCheckContext.getTableSubTypeSizeDetails(), diskUtilizationThreshold, true));
+        checkDiskUtilization(preCheckContext, diskUtilizationThreshold, true));
     // Check if all servers involved in the rebalance will have enough disk space after the rebalance.
     preCheckResult.put(DISK_UTILIZATION_AFTER_REBALANCE,
-        checkDiskUtilization(preCheckContext.getCurrentAssignment(), preCheckContext.getTargetAssignment(),
-            preCheckContext.getTableSubTypeSizeDetails(), diskUtilizationThreshold, false));
+        checkDiskUtilization(preCheckContext, diskUtilizationThreshold, false));
 
     preCheckResult.put(REBALANCE_CONFIG_OPTIONS, checkRebalanceConfig(rebalanceConfig, tableConfig,
         preCheckContext.getCurrentAssignment(), preCheckContext.getTargetAssignment(),
@@ -121,12 +124,10 @@ public class DefaultRebalancePreChecker implements RebalancePreChecker {
     return preCheckResult;
   }
 
-  /**
-   * Checks if the current segments on any servers needs a reload (table config or schema change that hasn't been
-   * applied yet). This check does not guarantee that the segments in deep store are up to date.
-   * TODO: Add an API to check for whether segments in deep store are up to date with the table configs and schema
-   *       and add a pre-check here to call that API.
-   */
+  /// Checks if the current segments on any servers needs a reload (table config or schema change that hasn't been
+  /// applied yet). This check does not guarantee that the segments in deep store are up to date.
+  /// TODO: Add an API to check for whether segments in deep store are up to date with the table configs and schema
+  ///       and add a pre-check here to call that API.
   private RebalancePreCheckerResult checkReloadNeededOnServers(String tableNameWithType, Logger tableRebalanceLogger) {
     tableRebalanceLogger.info("Fetching whether reload is needed");
     Boolean needsReload = null;
@@ -159,9 +160,7 @@ public class DefaultRebalancePreChecker implements RebalancePreChecker {
             : RebalancePreCheckerResult.warn("Reload needed prior to running rebalance");
   }
 
-  /**
-   * Checks if minimize data movement is set for the given table in the TableConfig
-   */
+  /// Checks if minimize data movement is set for the given table in the TableConfig
   private RebalancePreCheckerResult checkIsMinimizeDataMovement(TableConfig tableConfig,
       RebalanceConfig rebalanceConfig, Logger tableRebalanceLogger) {
     tableRebalanceLogger.info("Checking whether minimizeDataMovement is set");
@@ -269,9 +268,16 @@ public class DefaultRebalancePreChecker implements RebalancePreChecker {
     return RebalancePreCheckerResult.error("Got exception when fetching instance assignment, check manually");
   }
 
-  private RebalancePreCheckerResult checkDiskUtilization(Map<String, Map<String, String>> currentAssignment,
-      Map<String, Map<String, String>> targetAssignment,
-      TableSizeReader.TableSubTypeSizeDetails tableSubTypeSizeDetails, double threshold, boolean worstCase) {
+  /// Estimates whether the servers of the target assignment stay within the disk utilization threshold, based on the
+  /// average segment size and the number of segments added to (and, unless checking for the worst case, removed from)
+  /// each server. Every segment is assumed to take up disk space on each server it is assigned to. Downstream projects
+  /// where that does not hold (e.g. because a segment can be stored outside of the server, as indicated by
+  /// [TierConfig#getTierBackend()]) can override this.
+  protected RebalancePreCheckerResult checkDiskUtilization(PreCheckContext preCheckContext, double threshold,
+      boolean worstCase) {
+    Map<String, Map<String, String>> currentAssignment = preCheckContext.getCurrentAssignment();
+    Map<String, Map<String, String>> targetAssignment = preCheckContext.getTargetAssignment();
+    TableSizeReader.TableSubTypeSizeDetails tableSubTypeSizeDetails = preCheckContext.getTableSubTypeSizeDetails();
     boolean isDiskUtilSafe = true;
     StringBuilder message =
         new StringBuilder("UNSAFE. Servers with unsafe disk utilization (>" + (short) (threshold * 100) + "%): ");
@@ -341,7 +347,7 @@ public class DefaultRebalancePreChecker implements RebalancePreChecker {
 
   private RebalancePreCheckerResult checkRebalanceConfig(RebalanceConfig rebalanceConfig, TableConfig tableConfig,
       Map<String, Map<String, String>> currentAssignment, Map<String, Map<String, String>> targetAssignment,
-      RebalanceSummaryResult rebalanceSummaryResult) {
+      @Nullable RebalanceSummaryResult rebalanceSummaryResult) {
     List<String> warnings = new ArrayList<>();
     boolean pass = true;
     if (rebalanceConfig.isBestEfforts()) {

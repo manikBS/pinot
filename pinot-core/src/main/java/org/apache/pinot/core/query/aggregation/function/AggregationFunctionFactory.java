@@ -23,6 +23,10 @@ import java.util.List;
 import org.apache.datasketches.tuple.aninteger.IntegerSummary;
 import org.apache.pinot.common.request.context.ExpressionContext;
 import org.apache.pinot.common.request.context.FunctionContext;
+import org.apache.pinot.core.query.aggregation.function.array.ArrayAggBigDecimalFunction;
+import org.apache.pinot.core.query.aggregation.function.array.ArrayAggBytesFunction;
+import org.apache.pinot.core.query.aggregation.function.array.ArrayAggDistinctBigDecimalFunction;
+import org.apache.pinot.core.query.aggregation.function.array.ArrayAggDistinctBytesFunction;
 import org.apache.pinot.core.query.aggregation.function.array.ArrayAggDistinctDoubleFunction;
 import org.apache.pinot.core.query.aggregation.function.array.ArrayAggDistinctFloatFunction;
 import org.apache.pinot.core.query.aggregation.function.array.ArrayAggDistinctIntFunction;
@@ -48,18 +52,15 @@ import org.apache.pinot.spi.data.FieldSpec.DataType;
 import org.apache.pinot.spi.exception.BadQueryRequestException;
 
 
-/**
- * Factory class to create instances of aggregation function of the given name.
- */
+/// Factory class to create instances of aggregation function of the given name.
 @SuppressWarnings("rawtypes")
 public class AggregationFunctionFactory {
   private AggregationFunctionFactory() {
   }
 
-  /**
-   * Given the function information, returns a new instance of the corresponding aggregation function.
-   * <p>NOTE: Underscores in the function name are ignored.
-   */
+  /// Given the function information, returns a new instance of the corresponding aggregation function.
+  ///
+  /// NOTE: Underscores in the function name are ignored.
   public static AggregationFunction getAggregationFunction(FunctionContext function, boolean nullHandlingEnabled) {
     try {
       String upperCaseFunctionName =
@@ -220,15 +221,25 @@ public class AggregationFunctionFactory {
             return new MinStringAggregationFunction(arguments, nullHandlingEnabled);
           case MAXSTRING:
             return new MaxStringAggregationFunction(arguments, nullHandlingEnabled);
+          case MINLONG:
+            return new MinLongAggregationFunction(arguments, nullHandlingEnabled);
+          case MAXLONG:
+            return new MaxLongAggregationFunction(arguments, nullHandlingEnabled);
           case SUM:
           case SUM0:
             return new SumAggregationFunction(arguments, nullHandlingEnabled);
+          case SUMINT:
+            return new SumIntAggregationFunction(arguments, nullHandlingEnabled);
+          case SUMLONG:
+            return new SumLongAggregationFunction(arguments, nullHandlingEnabled);
           case SUMPRECISION:
             return new SumPrecisionAggregationFunction(arguments, nullHandlingEnabled);
           case AVG:
             return new AvgAggregationFunction(arguments, nullHandlingEnabled);
           case MODE:
             return new ModeAggregationFunction(arguments, nullHandlingEnabled);
+          case ANYVALUE:
+            return new AnyValueAggregationFunction(arguments, nullHandlingEnabled);
           case FIRSTWITHTIME: {
             Preconditions.checkArgument(numArguments == 3,
                 "FIRST_WITH_TIME expects 3 arguments, got: %s. The function can be used as "
@@ -260,16 +271,19 @@ public class AggregationFunctionFactory {
           }
           case LISTAGG: {
             Preconditions.checkArgument(numArguments == 2 || numArguments == 3,
-                "LISTAGG expects 2 arguments, got: %s. The function can be used as "
-                    + "listAgg([distinct] expression, 'separator')", numArguments);
+                "LISTAGG expects 2 or 3 arguments, got: %s. The function can be used as "
+                    + "listAgg(expression, 'separator'[, true|false])", numArguments);
             ExpressionContext separatorExpression = arguments.get(1);
             Preconditions.checkArgument(separatorExpression.getType() == ExpressionContext.Type.LITERAL,
                 "LISTAGG expects the 2nd argument to be literal, got: %s. The function can be used as "
-                    + "listAgg([distinct] expression, 'separator')", separatorExpression.getType());
+                    + "listAgg(expression, 'separator'[, true|false])", separatorExpression.getType());
             String separator = separatorExpression.getLiteral().getStringValue();
             boolean isDistinct = false;
             if (numArguments == 3) {
               ExpressionContext isDistinctListAggExp = arguments.get(2);
+              Preconditions.checkArgument(isDistinctListAggExp.getType() == ExpressionContext.Type.LITERAL,
+                  "LISTAGG expects the 3rd argument to be a boolean literal (true/false), got: %s. The function can "
+                      + "be used as listAgg(expression, 'separator'[, true|false])", isDistinctListAggExp.getType());
               isDistinct = isDistinctListAggExp.getLiteral().getBooleanValue();
             }
             if (isDistinct) {
@@ -310,8 +324,12 @@ public class AggregationFunctionFactory {
                   return new ArrayAggDistinctFloatFunction(firstArgument, nullHandlingEnabled);
                 case DOUBLE:
                   return new ArrayAggDistinctDoubleFunction(firstArgument, nullHandlingEnabled);
+                case BIG_DECIMAL:
+                  return new ArrayAggDistinctBigDecimalFunction(firstArgument, nullHandlingEnabled);
                 case STRING:
                   return new ArrayAggDistinctStringFunction(firstArgument, nullHandlingEnabled);
+                case BYTES:
+                  return new ArrayAggDistinctBytesFunction(firstArgument, nullHandlingEnabled);
                 default:
                   throw new IllegalArgumentException("Unsupported data type for ARRAY_AGG: " + dataType);
               }
@@ -327,8 +345,12 @@ public class AggregationFunctionFactory {
                 return new ArrayAggFloatFunction(firstArgument, nullHandlingEnabled);
               case DOUBLE:
                 return new ArrayAggDoubleFunction(firstArgument, nullHandlingEnabled);
+              case BIG_DECIMAL:
+                return new ArrayAggBigDecimalFunction(firstArgument, nullHandlingEnabled);
               case STRING:
                 return new ArrayAggStringFunction(firstArgument, nullHandlingEnabled);
+              case BYTES:
+                return new ArrayAggBytesFunction(firstArgument, nullHandlingEnabled);
               default:
                 throw new IllegalArgumentException("Unsupported data type for ARRAY_AGG: " + dataType);
             }
@@ -376,6 +398,8 @@ public class AggregationFunctionFactory {
             return new DistinctCountRawHLLAggregationFunction(arguments);
           case DISTINCTCOUNTSMARTHLL:
             return new DistinctCountSmartHLLAggregationFunction(arguments);
+          case DISTINCTCOUNTSMARTHLLPLUS:
+            return new DistinctCountSmartHLLPlusAggregationFunction(arguments);
           case DISTINCTCOUNTSMARTULL:
             return new DistinctCountSmartULLAggregationFunction(arguments);
           case FASTHLL:

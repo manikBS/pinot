@@ -19,7 +19,6 @@
 package org.apache.pinot.query.runtime.plan.server;
 
 import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableList;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -52,14 +51,13 @@ import org.apache.pinot.query.routing.StageMetadata;
 import org.apache.pinot.query.routing.StagePlan;
 import org.apache.pinot.query.runtime.operator.MultiStageOperator;
 import org.apache.pinot.query.runtime.operator.OpChain;
+import org.apache.pinot.query.runtime.plan.OpChainConverterDispatcher;
 import org.apache.pinot.query.runtime.plan.OpChainExecutionContext;
-import org.apache.pinot.query.runtime.plan.PlanNodeToOpChain;
 import org.apache.pinot.segment.local.data.manager.TableDataManager;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.data.FieldSpec;
 import org.apache.pinot.spi.data.Schema;
-import org.apache.pinot.spi.query.QueryThreadContext;
 import org.apache.pinot.spi.utils.ByteArray;
 import org.apache.pinot.spi.utils.CommonConstants;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
@@ -77,7 +75,7 @@ public class ServerPlanRequestUtils {
 
   private static final int DEFAULT_LEAF_NODE_LIMIT = Integer.MAX_VALUE;
   private static final List<String> QUERY_REWRITERS_CLASS_NAMES =
-      ImmutableList.of(PredicateComparisonRewriter.class.getName(),
+      List.of(PredicateComparisonRewriter.class.getName(),
           NonAggregationGroupByToDistinctQueryRewriter.class.getName(), RlsFiltersRewriter.class.getName());
   private static final List<QueryRewriter> QUERY_REWRITERS =
       new ArrayList<>(QueryRewriterFactory.getQueryRewriters(QUERY_REWRITERS_CLASS_NAMES));
@@ -90,13 +88,11 @@ public class ServerPlanRequestUtils {
         }, false, rowFilters);
   }
 
-  /**
-   * main entry point for compiling leaf-stage {@link StagePlan}.
-   *
-   * @param executionContext the execution context used by the leaf-stage execution engine.
-   * @param stagePlan the distribute stage plan on the leaf.
-   * @return an opChain that executes the leaf-stage, with the leaf-stage execution encapsulated within.
-   */
+  /// main entry point for compiling leaf-stage [StagePlan].
+  ///
+  /// @param executionContext the execution context used by the leaf-stage execution engine.
+  /// @param stagePlan the distribute stage plan on the leaf.
+  /// @return an opChain that executes the leaf-stage, with the leaf-stage execution encapsulated within.
   public static OpChain compileLeafStage(
       OpChainExecutionContext executionContext,
       StagePlan stagePlan,
@@ -134,16 +130,14 @@ public class ServerPlanRequestUtils {
     serverContext.setServerQueryRequests(serverQueryRequests);
     // 3. Compile the OpChain
     executionContext.setLeafStageContext(serverContext);
-    return PlanNodeToOpChain.convert(stagePlan.getRootNode(), executionContext, relationConsumer);
+    return OpChainConverterDispatcher.convert(stagePlan.getRootNode(), executionContext, relationConsumer);
   }
 
-  /**
-   * First step of Server physical plan - construct {@link PinotQuery} and determine the leaf-stage boundary
-   * {@link PlanNode}.
-   *
-   * It constructs the content for {@link ServerPlanRequestContext#getPinotQuery()} and set the boundary via:
-   *   {@link ServerPlanRequestContext#setLeafStageBoundaryNode(PlanNode)}.
-   */
+  /// First step of Server physical plan - construct [PinotQuery] and determine the leaf-stage boundary
+  /// [PlanNode].
+  ///
+  /// It constructs the content for [ServerPlanRequestContext#getPinotQuery()] and set the boundary via:
+  ///   [ServerPlanRequestContext#setLeafStageBoundaryNode(PlanNode)].
   private static void constructPinotQueryPlan(ServerPlanRequestContext serverContext,
       Map<String, String> requestMetadata) {
     StagePlan stagePlan = serverContext.getStagePlan();
@@ -155,9 +149,7 @@ public class ServerPlanRequestUtils {
     ServerPlanRequestVisitor.walkPlanNode(stagePlan.getRootNode(), serverContext);
   }
 
-  /**
-   * Entry point to construct a list of {@link InstanceRequest}s for executing leaf-stage v1 runner.
-   */
+  /// Entry point to construct a list of [InstanceRequest]s for executing leaf-stage v1 runner.
   public static List<InstanceRequest> constructServerQueryRequests(OpChainExecutionContext executionContext,
       PinotQuery pinotQuery, InstanceDataManager instanceDataManager) {
     StageMetadata stageMetadata = executionContext.getStageMetadata();
@@ -217,9 +209,7 @@ public class ServerPlanRequestUtils {
     }
   }
 
-  /**
-   * Convert {@link PinotQuery} into an {@link InstanceRequest}.
-   */
+  /// Convert [PinotQuery] into an [InstanceRequest].
   private static InstanceRequest compileInstanceRequest(OpChainExecutionContext executionContext, PinotQuery pinotQuery,
       @Nullable TimeBoundaryInfo timeBoundaryInfo, TableType tableType,
       String tableNameWithType, TableConfig tableConfig, Schema schema, @Nullable List<String> segmentList,
@@ -227,9 +217,6 @@ public class ServerPlanRequestUtils {
     Preconditions.checkArgument(segmentList == null || tableRouteInfoList == null,
         "Either segmentList OR tableRouteInfoList should be set");
 
-    // Making a unique requestId for leaf stages otherwise it causes problem on stats/metrics/tracing.
-    long requestId = (executionContext.getRequestId() << 16) + ((long) executionContext.getStageId() << 8) + (
-        tableType == TableType.REALTIME ? 1 : 0);
     // 1. Modify the PinotQuery
     pinotQuery.getDataSource().setTableName(tableNameWithType);
     if (timeBoundaryInfo != null) {
@@ -238,7 +225,7 @@ public class ServerPlanRequestUtils {
     for (QueryRewriter queryRewriter : QUERY_REWRITERS) {
       pinotQuery = queryRewriter.rewrite(pinotQuery);
     }
-    QUERY_OPTIMIZER.optimize(pinotQuery, tableConfig, schema);
+    QUERY_OPTIMIZER.optimize(pinotQuery, schema);
 
     // 2. Update query options according to requestMetadataMap
     updateQueryOptions(pinotQuery, executionContext);
@@ -252,9 +239,13 @@ public class ServerPlanRequestUtils {
 
     // 4. Create InstanceRequest with segmentList
     InstanceRequest instanceRequest = new InstanceRequest();
+    // Making a unique requestId for leaf stages otherwise it causes problem on stats/metrics/tracing.
+    // TODO: Revisit if this is still necessary
+    long requestId = (executionContext.getRequestId() << 16) + ((long) executionContext.getStageId() << 8) + (
+        tableType == TableType.REALTIME ? 1 : 0);
     instanceRequest.setRequestId(requestId);
-    instanceRequest.setCid(QueryThreadContext.getCid());
-    instanceRequest.setBrokerId("unknown");
+    instanceRequest.setCid(executionContext.getCid());
+    instanceRequest.setBrokerId(executionContext.getBrokerId());
     instanceRequest.setEnableTrace(executionContext.isTraceEnabled());
     /*
      * If segmentList is not null, it means that the query is for a single table and we can directly set the segments.
@@ -272,9 +263,7 @@ public class ServerPlanRequestUtils {
     return instanceRequest;
   }
 
-  /**
-   * Helper method to update query options.
-   */
+  /// Helper method to update query options.
   private static void updateQueryOptions(PinotQuery pinotQuery, OpChainExecutionContext executionContext) {
     Map<String, String> queryOptions = pinotQuery.getQueryOptions();
     if (queryOptions != null) {
@@ -289,9 +278,7 @@ public class ServerPlanRequestUtils {
         Long.toString(executionContext.getPassiveDeadlineMs() - executionContext.getActiveDeadlineMs()));
   }
 
-  /**
-   * Helper method to attach the time boundary to the given PinotQuery.
-   */
+  /// Helper method to attach the time boundary to the given PinotQuery.
   private static void attachTimeBoundary(PinotQuery pinotQuery, TimeBoundaryInfo timeBoundaryInfo,
       boolean isOfflineRequest) {
     String timeColumn = timeBoundaryInfo.getTimeColumn();
@@ -310,9 +297,7 @@ public class ServerPlanRequestUtils {
     }
   }
 
-  /**
-   * attach the dynamic filter to the given PinotQuery.
-   */
+  /// attach the dynamic filter to the given PinotQuery.
   static void attachDynamicFilter(PinotQuery pinotQuery, List<Integer> leftKeys, List<Integer> rightKeys,
       List<Object[]> dataContainer, DataSchema dataSchema) {
     List<Expression> expressions = new ArrayList<>();
@@ -429,7 +414,7 @@ public class ServerPlanRequestUtils {
     LogicalTableContext logicalTableContext = instanceDataManager.getLogicalTableContext(logicalTableName);
     Preconditions.checkNotNull(logicalTableContext,
         String.format("LogicalTableContext not found for logical table name: %s, query context id: %s",
-            logicalTableName, QueryThreadContext.getCid()));
+            logicalTableName, executionContext.getCid()));
 
     Map<String, List<String>> logicalTableSegmentsMap =
         executionContext.getWorkerMetadata().getLogicalTableSegmentsMap();

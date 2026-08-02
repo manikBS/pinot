@@ -105,10 +105,11 @@ public class MetadataAndDictionaryAggregationPlanMakerTest {
     IngestionConfig ingestionConfig = new IngestionConfig();
     ingestionConfig.setSegmentTimeValueCheck(false);
     ingestionConfig.setRowTimeValueCheck(false);
-    TableConfig tableConfig =
-        new TableConfigBuilder(TableType.OFFLINE).setTableName("testTable").setTimeColumnName("daysSinceEpoch")
-            .setInvertedIndexColumns(List.of("column6", "column7", "column11", "column17", "column18"))
-            .setCreateInvertedIndexDuringSegmentGeneration(true).setIngestionConfig(ingestionConfig).build();
+    TableConfig tableConfig = new TableConfigBuilder(TableType.OFFLINE).setTableName("testTable")
+        .setTimeColumnName("daysSinceEpoch")
+        .setInvertedIndexColumns(List.of("column6", "column7", "column11", "column17", "column18"))
+        .setIngestionConfig(ingestionConfig)
+        .build();
 
     // Create the segment generator config.
     SegmentGeneratorConfig segmentGeneratorConfig = new SegmentGeneratorConfig(tableConfig, schema);
@@ -164,7 +165,7 @@ public class MetadataAndDictionaryAggregationPlanMakerTest {
     assertTrue(operatorClass.isInstance(operator));
 
     SegmentContext segmentContext = new SegmentContext(_upsertIndexSegment);
-    segmentContext.setQueryableDocIdsSnapshot(UpsertUtils.getQueryableDocIdsSnapshotFromSegment(_upsertIndexSegment));
+    segmentContext.setDocIdsSnapshot(UpsertUtils.getQueryableDocIdsSnapshotFromSegment(_upsertIndexSegment));
     Operator<?> upsertOperator = PLAN_MAKER.makeSegmentPlanNode(segmentContext, queryContext).run();
     assertTrue(upsertOperatorClass.isInstance(upsertOperator));
   }

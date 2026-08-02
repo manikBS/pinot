@@ -43,11 +43,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/**
- * SSL utils class which helps in initialization of Kafka client SSL configuration. The class can install the
- * provided server certificate enabling one-way SSL or it can install the server certificate and the
- * client certificates enabling two-way SSL.
- */
+/// SSL utils class which helps in initialization of Kafka client SSL configuration. The class can install the
+/// provided server certificate enabling one-way SSL or it can install the server certificate and the
+/// client certificates enabling two-way SSL.
 public class KafkaSSLUtils {
 
   private KafkaSSLUtils() {
@@ -59,7 +57,8 @@ public class KafkaSSLUtils {
   private static final String DEFAULT_KEY_ALGORITHM = "RSA";
   private static final String DEFAULT_KEYSTORE_TYPE = "PKCS12";
   private static final String DEFAULT_SECURITY_PROTOCOL = "SSL";
-  private static final String DEFAULT_TRUSTSTORE_TYPE = "jks";
+  // Follow the JVM default keystore type (typically "jks") unless explicitly configured.
+  private static final String DEFAULT_TRUSTSTORE_TYPE = KeyStore.getDefaultType();
   private static final String DEFAULT_SERVER_ALIAS = "ServerAlias";
   private static final String DEFAULT_CLIENT_ALIAS = "ClientAlias";
   // Key constants

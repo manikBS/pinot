@@ -33,6 +33,7 @@ import org.apache.pinot.query.planner.logical.RexExpression;
 import org.apache.pinot.query.planner.plannode.JoinNode;
 import org.apache.pinot.query.runtime.blocks.MseBlock;
 import org.apache.pinot.query.runtime.blocks.RowHeapDataBlock;
+import org.apache.pinot.query.runtime.operator.join.JoinedRowView;
 import org.apache.pinot.query.runtime.operator.operands.TransformOperand;
 import org.apache.pinot.query.runtime.operator.operands.TransformOperandFactory;
 import org.apache.pinot.query.runtime.plan.OpChainExecutionContext;
@@ -42,15 +43,16 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/**
- * This {@code LookupJoinOperator} implements the lookup join algorithm.
- * <p>This algorithm assumes that the right table is a dimension table which is preloaded. For each of the left table
- * row, it looks up for the corresponding row from the dimension table and create a joint row.
- * <p>For each of the data block received from the left table, it generates a joint data block. The output is in the
- * format of [left_row, right_row].
- * <p>Since right table is a dimension table which is replicated across all servers, RIGHT and FULL join are not
- * supported to avoid duplication.
- */
+/// This `LookupJoinOperator` implements the lookup join algorithm.
+///
+/// This algorithm assumes that the right table is a dimension table which is preloaded. For each of the left table
+/// row, it looks up for the corresponding row from the dimension table and create a joint row.
+///
+/// For each of the data block received from the left table, it generates a joint data block. The output is in the
+/// format of \[left_row, right_row\].
+///
+/// Since right table is a dimension table which is replicated across all servers, RIGHT and FULL join are not
+/// supported to avoid duplication.
 public class LookupJoinOperator extends MultiStageOperator {
   private static final Logger LOGGER = LoggerFactory.getLogger(LookupJoinOperator.class);
   private static final String EXPLAIN_NAME = "LOOKUP_JOIN";
@@ -58,6 +60,7 @@ public class LookupJoinOperator extends MultiStageOperator {
       Set.of(JoinRelType.INNER, JoinRelType.LEFT, JoinRelType.SEMI, JoinRelType.ANTI);
 
   private final MultiStageOperator _leftInput;
+  private final int _leftColumnSize;
   private final LeafOperator _rightInput;
   private final JoinRelType _joinType;
   private final int[] _leftKeyIds;
@@ -68,10 +71,11 @@ public class LookupJoinOperator extends MultiStageOperator {
   private final List<TransformOperand> _nonEquiEvaluators;
   private final StatMap<StatKey> _statMap = new StatMap<>(StatKey.class);
 
-  public LookupJoinOperator(OpChainExecutionContext context, MultiStageOperator leftInput,
+  public LookupJoinOperator(OpChainExecutionContext context, MultiStageOperator leftInput, DataSchema leftSchema,
       MultiStageOperator rightInput, JoinNode node) {
     super(context);
     _leftInput = leftInput;
+    _leftColumnSize = leftSchema.size();
     Preconditions.checkState(rightInput instanceof LeafOperator, "Right input must be leaf operator");
     _rightInput = (LeafOperator) rightInput;
     _joinType = node.getJoinType();
@@ -137,7 +141,7 @@ public class LookupJoinOperator extends MultiStageOperator {
         return leftBlock;
       }
       List<Object[]> rows = buildJoinedRows((MseBlock.Data) leftBlock);
-      sampleAndCheckInterruption();
+      checkTerminationAndSampleUsage();
       if (!rows.isEmpty()) {
         return new RowHeapDataBlock(rows, _resultSchema);
       }
@@ -145,7 +149,7 @@ public class LookupJoinOperator extends MultiStageOperator {
   }
 
   @Override
-  protected StatMap<?> copyStatMaps() {
+  public StatMap<StatKey> copyStatMaps() {
     return new StatMap<>(_statMap);
   }
 
@@ -169,11 +173,11 @@ public class LookupJoinOperator extends MultiStageOperator {
       PrimaryKey key = getKey(leftRow);
       Object[] rightRow = _rightTable.lookupValues(key, _rightColumns);
       if (rightRow != null) {
-        // TODO: Optimize this to avoid unnecessary object copy.
-        Object[] resultRow = joinRow(leftRow, rightRow);
+        List<Object> resultRow = JoinedRowView.of(leftRow, rightRow, _resultColumnSize, _leftColumnSize);
         if (_nonEquiEvaluators.isEmpty() || _nonEquiEvaluators.stream()
             .allMatch(evaluator -> BooleanUtils.isTrueInternalValue(evaluator.apply(resultRow)))) {
-          rows.add(resultRow);
+          // defer copying of the content until row matches
+          rows.add(resultRow.toArray());
           continue;
         }
       }
@@ -254,13 +258,9 @@ public class LookupJoinOperator extends MultiStageOperator {
         return true;
       }
     },
-    /**
-     * Allocated memory in bytes for this operator or its children in the same stage.
-     */
+    /// Allocated memory in bytes for this operator or its children in the same stage.
     ALLOCATED_MEMORY_BYTES(StatMap.Type.LONG),
-    /**
-     * Time spent on GC while this operator or its children in the same stage were running.
-     */
+    /// Time spent on GC while this operator or its children in the same stage were running.
     GC_TIME_MS(StatMap.Type.LONG);
 
     private final StatMap.Type _type;

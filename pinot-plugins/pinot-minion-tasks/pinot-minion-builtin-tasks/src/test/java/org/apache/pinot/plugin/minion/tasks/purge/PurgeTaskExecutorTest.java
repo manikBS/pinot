@@ -37,6 +37,7 @@ import org.apache.pinot.segment.local.segment.creator.impl.SegmentIndexCreationD
 import org.apache.pinot.segment.local.segment.readers.GenericRowRecordReader;
 import org.apache.pinot.segment.local.segment.readers.PinotSegmentRecordReader;
 import org.apache.pinot.segment.spi.creator.SegmentGeneratorConfig;
+import org.apache.pinot.spi.config.instance.InstanceType;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.data.FieldSpec;
@@ -51,10 +52,8 @@ import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
 
-/**
- * This task only tests the basic functionality of {@link PurgeTaskExecutor#convert(PinotTaskConfig, File, File)}.
- * Random test for segment purger is covered in SegmentPurgerTest.
- */
+/// This task only tests the basic functionality of [PurgeTaskExecutor#convert(PinotTaskConfig, File, File)].
+/// Random test for segment purger is covered in SegmentPurgerTest.
 public class PurgeTaskExecutorTest {
   private static final File TEMP_DIR = new File(FileUtils.getTempDirectory(), "PurgeTaskExecutorTest");
   private static final File ORIGINAL_SEGMENT_DIR = new File(TEMP_DIR, "originalSegment");
@@ -84,9 +83,9 @@ public class PurgeTaskExecutorTest {
     GenericRowRecordReader genericRowRecordReader = new GenericRowRecordReader(rows);
 
     SegmentGeneratorConfig config = new SegmentGeneratorConfig(tableConfig, schema);
+    config.setInstanceType(InstanceType.MINION);
     config.setOutDir(ORIGINAL_SEGMENT_DIR.getPath());
     config.setSegmentName(SEGMENT_NAME);
-
     SegmentIndexCreationDriverImpl driver = new SegmentIndexCreationDriverImpl();
     driver.init(config, genericRowRecordReader);
     driver.build();

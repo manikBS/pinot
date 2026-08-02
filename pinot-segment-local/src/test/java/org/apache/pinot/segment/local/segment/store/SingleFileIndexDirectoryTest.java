@@ -18,16 +18,16 @@
  */
 package org.apache.pinot.segment.local.segment.store;
 
-import com.google.common.collect.ImmutableMap;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
@@ -37,6 +37,7 @@ import org.apache.commons.io.FileUtils;
 import org.apache.pinot.segment.local.PinotBuffersAfterMethodCheckRule;
 import org.apache.pinot.segment.local.segment.creator.impl.text.LuceneTextIndexCreator;
 import org.apache.pinot.segment.local.segment.index.readers.text.LuceneTextIndexReader;
+import org.apache.pinot.segment.local.segment.index.text.TextIndexConfigBuilder;
 import org.apache.pinot.segment.spi.V1Constants;
 import org.apache.pinot.segment.spi.creator.SegmentVersion;
 import org.apache.pinot.segment.spi.index.StandardIndexes;
@@ -238,8 +239,7 @@ public class SingleFileIndexDirectoryTest implements PinotBuffersAfterMethodChec
   @Test
   public void testRemoveTextIndices()
       throws IOException, ConfigurationException {
-    TextIndexConfig config = new TextIndexConfig(false, null, null, false, false, null, null, true, 500, null, null,
-        null, null, false, false, 0, false, null);
+    TextIndexConfig config = new TextIndexConfigBuilder().build();
     try (SingleFileIndexDirectory sfd = new SingleFileIndexDirectory(TEMP_DIR, _segmentMetadata, ReadMode.mmap);
         LuceneTextIndexCreator fooCreator = new LuceneTextIndexCreator("foo", TEMP_DIR, true, false, null, null,
             config);
@@ -311,17 +311,17 @@ public class SingleFileIndexDirectoryTest implements PinotBuffersAfterMethodChec
       FileUtils.touch(srcTmp);
     }
     File dstTmp = new File(TEMP_DIR, UUID.randomUUID().toString());
-    TreeMap<IndexKey, IndexEntry> indicesToCopy = new TreeMap<>(ImmutableMap
-        .of(new IndexKey("foo", StandardIndexes.inverted()),
-            new IndexEntry(new IndexKey("foo", StandardIndexes.inverted()), 0, 0),
-            new IndexKey("foo", StandardIndexes.forward()),
-            new IndexEntry(new IndexKey("foo", StandardIndexes.forward()), 0, 0),
-            new IndexKey("bar", StandardIndexes.forward()),
-            new IndexEntry(new IndexKey("bar", StandardIndexes.forward()), 0, 0),
-            new IndexKey("bar", StandardIndexes.dictionary()),
-            new IndexEntry(new IndexKey("bar", StandardIndexes.dictionary()), 0, 0),
-            new IndexKey("bar", StandardIndexes.json()),
-            new IndexEntry(new IndexKey("bar", StandardIndexes.json()), 0, 0)));
+    TreeMap<IndexKey, IndexEntry> indicesToCopy = new TreeMap<>(Map.of(
+        new IndexKey("foo", StandardIndexes.inverted()),
+        new IndexEntry(new IndexKey("foo", StandardIndexes.inverted()), 0, 0),
+        new IndexKey("foo", StandardIndexes.forward()),
+        new IndexEntry(new IndexKey("foo", StandardIndexes.forward()), 0, 0),
+        new IndexKey("bar", StandardIndexes.forward()),
+        new IndexEntry(new IndexKey("bar", StandardIndexes.forward()), 0, 0),
+        new IndexKey("bar", StandardIndexes.dictionary()),
+        new IndexEntry(new IndexKey("bar", StandardIndexes.dictionary()), 0, 0),
+        new IndexKey("bar", StandardIndexes.json()),
+        new IndexEntry(new IndexKey("bar", StandardIndexes.json()), 0, 0)));
     List<IndexEntry> retained = SingleFileIndexDirectory.copyIndices(srcTmp, dstTmp, indicesToCopy);
     List<IndexKey> retainedKeys = retained.stream().map(e -> e._key).collect(Collectors.toList());
     // The returned entries are sorted.
@@ -354,8 +354,7 @@ public class SingleFileIndexDirectoryTest implements PinotBuffersAfterMethodChec
   @Test
   public void testGetColumnIndices()
       throws Exception {
-    TextIndexConfig config = new TextIndexConfig(false, null, null, false, false, null, null, true, 500, null, null,
-        null, null, false, false, 0, false, null);
+    TextIndexConfig config = new TextIndexConfigBuilder().build();
     try (SingleFileIndexDirectory sfd = new SingleFileIndexDirectory(TEMP_DIR, _segmentMetadata, ReadMode.mmap);
         LuceneTextIndexCreator fooCreator = new LuceneTextIndexCreator("foo", TEMP_DIR, true, false, null, null,
             config);
@@ -387,10 +386,10 @@ public class SingleFileIndexDirectoryTest implements PinotBuffersAfterMethodChec
       assertEquals(sfd.getColumnsWithIndex(StandardIndexes.forward()),
           new HashSet<>(Arrays.asList("col1", "col3")));
       assertEquals(sfd.getColumnsWithIndex(StandardIndexes.dictionary()),
-          new HashSet<>(Collections.singletonList("col2")));
+          new HashSet<>(List.of("col2")));
       assertEquals(sfd.getColumnsWithIndex(StandardIndexes.inverted()),
-          new HashSet<>(Collections.singletonList("col4")));
-      assertEquals(sfd.getColumnsWithIndex(StandardIndexes.h3()), new HashSet<>(Collections.singletonList("col5")));
+          new HashSet<>(List.of("col4")));
+      assertEquals(sfd.getColumnsWithIndex(StandardIndexes.h3()), new HashSet<>(List.of("col5")));
       assertEquals(sfd.getColumnsWithIndex(StandardIndexes.text()), new HashSet<>(Arrays.asList("foo", "bar")));
 
       sfd.removeIndex("col1", StandardIndexes.forward());
@@ -400,13 +399,13 @@ public class SingleFileIndexDirectoryTest implements PinotBuffersAfterMethodChec
       sfd.removeIndex("col111", StandardIndexes.dictionary());
 
       assertEquals(sfd.getColumnsWithIndex(StandardIndexes.forward()),
-          new HashSet<>(Collections.singletonList("col3")));
-      assertEquals(sfd.getColumnsWithIndex(StandardIndexes.dictionary()), new HashSet<>(Collections.emptySet()));
+          new HashSet<>(List.of("col3")));
+      assertEquals(sfd.getColumnsWithIndex(StandardIndexes.dictionary()), new HashSet<>(Set.of()));
       assertEquals(sfd.getColumnsWithIndex(StandardIndexes.inverted()),
-          new HashSet<>(Collections.singletonList("col4")));
-      assertEquals(sfd.getColumnsWithIndex(StandardIndexes.h3()), new HashSet<>(Collections.emptySet()));
+          new HashSet<>(List.of("col4")));
+      assertEquals(sfd.getColumnsWithIndex(StandardIndexes.h3()), new HashSet<>(Set.of()));
       assertEquals(sfd.getColumnsWithIndex(StandardIndexes.text()),
-          new HashSet<>(Collections.singletonList("bar")));
+          new HashSet<>(List.of("bar")));
     }
   }
 }

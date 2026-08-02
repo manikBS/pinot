@@ -24,9 +24,7 @@ import org.testng.annotations.Test;
 
 import static org.testng.Assert.assertEquals;
 
-/**
- * Unit tests for {@link BrokerMetrics}
- */
+/// Unit tests for [BrokerMetrics]
 public class BrokerMetricsTest {
 
   @Test
@@ -51,12 +49,6 @@ public class BrokerMetricsTest {
     Map<String, String> queryOptionWithPreferredPool = new HashMap<>();
     queryOptionWithPreferredPool.put("orderedPreferredPools", "0");
     assertEquals(BrokerMetrics.getTagForPreferredPool(queryOptionWithPreferredPool), "preferredPoolOptSet",
-        "Should return preferredPoolOptSet when queryOption contains ORDERED_PREFERRED_POOLS");
-
-    // Test case 5: queryOption contains ORDERED_PREFERRED_REPLICAS
-    Map<String, String> queryOptionWithPreferredGroup = new HashMap<>();
-    queryOptionWithPreferredGroup.put("orderedPreferredReplicas", "0");
-    assertEquals(BrokerMetrics.getTagForPreferredPool(queryOptionWithPreferredGroup), "preferredPoolOptSet",
         "Should return preferredPoolOptSet when queryOption contains ORDERED_PREFERRED_POOLS");
   }
 }

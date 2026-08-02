@@ -20,14 +20,12 @@ package org.apache.pinot.query;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import javax.annotation.Nullable;
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.tuple.Pair;
@@ -48,24 +46,24 @@ public class QueryEnvironmentTestBase {
 
   protected static final Random RANDOM_REQUEST_ID_GEN = new Random();
   public static final Map<String, List<String>> SERVER1_SEGMENTS =
-      ImmutableMap.of("a_REALTIME", ImmutableList.of("a1", "a2"), "b_REALTIME", ImmutableList.of("b1"), "c_OFFLINE",
-          ImmutableList.of("c1"), "d_OFFLINE", ImmutableList.of("d1"), "e_OFFLINE", ImmutableList.of("e1"));
+      Map.of("a_REALTIME", List.of("a1", "a2"), "b_REALTIME", List.of("b1"), "c_OFFLINE",
+          List.of("c1"), "d_OFFLINE", List.of("d1"), "e_OFFLINE", List.of("e1"));
   public static final Map<String, List<String>> SERVER2_SEGMENTS =
-      ImmutableMap.of("a_REALTIME", ImmutableList.of("a3"), "c_OFFLINE", ImmutableList.of("c2", "c3"),
-          "d_REALTIME", ImmutableList.of("d2"), "d_OFFLINE", ImmutableList.of("d3"), "e_REALTIME",
-          ImmutableList.of("e2"), "e_OFFLINE", ImmutableList.of("e3"));
+      Map.of("a_REALTIME", List.of("a3"), "c_OFFLINE", List.of("c2", "c3"),
+          "d_REALTIME", List.of("d2"), "d_OFFLINE", List.of("d3"), "e_REALTIME",
+          List.of("e2"), "e_OFFLINE", List.of("e3"));
   public static final Map<String, Schema> TABLE_SCHEMAS = new HashMap<>();
   public static final Map<String, Pair<String, List<List<String>>>> PARTITIONED_SEGMENTS_MAP = new HashMap<>();
   public static final int PARTITION_COUNT = 4;
   public static final Map<String, String> PARTITIONED_TABLES =
-      ImmutableMap.of("a_REALTIME", "col2", "b_REALTIME", "col1");
+      Map.of("a_REALTIME", "col2", "b_REALTIME", "col1");
   static {
     for (Map.Entry<String, String> e : PARTITIONED_TABLES.entrySet()) {
       String tableName = e.getKey();
       String partitionColumn = e.getValue();
       List<List<String>> partitionIdToSegmentsMap = new ArrayList<>(PARTITION_COUNT);
-      partitionIdToSegmentsMap.add(SERVER1_SEGMENTS.getOrDefault(tableName, Collections.emptyList()));
-      partitionIdToSegmentsMap.add(SERVER2_SEGMENTS.getOrDefault(tableName, Collections.emptyList()));
+      partitionIdToSegmentsMap.add(SERVER1_SEGMENTS.getOrDefault(tableName, List.of()));
+      partitionIdToSegmentsMap.add(SERVER2_SEGMENTS.getOrDefault(tableName, List.of()));
       for (int i = 2; i < PARTITION_COUNT; i++) {
         partitionIdToSegmentsMap.add(new ArrayList<>());
       }
@@ -79,7 +77,9 @@ public class QueryEnvironmentTestBase {
     TABLE_SCHEMAS.put("c_OFFLINE", getSchemaBuilder("c").build());
     TABLE_SCHEMAS.put("d", getSchemaBuilder("d").build());
     TABLE_SCHEMAS.put("e", getSchemaBuilder("e")
-        .addMultiValueDimension("mcol1", FieldSpec.DataType.STRING).build());
+        .addMultiValueDimension("mcol1", FieldSpec.DataType.STRING)
+        .addMultiValueDimension("mcol2", FieldSpec.DataType.LONG)
+        .build());
   }
 
   static Schema.SchemaBuilder getSchemaBuilder(String schemaName) {
@@ -251,8 +251,15 @@ public class QueryEnvironmentTestBase {
         new Object[]{"SELECT JSON_EXTRACT_SCALAR(col1, '$.foo', 'FLOAT_ARRAY') FROM a"},
         new Object[]{"SELECT JSON_EXTRACT_SCALAR(col1, '$.foo', 'DOUBLE_ARRAY') FROM a"},
         new Object[]{"SELECT JSON_EXTRACT_SCALAR(col1, '$.foo', 'STRING_ARRAY') FROM a"},
+        new Object[]{"SELECT JSON_EXTRACT_SCALAR_FAST(col1, '$.foo', 'BIG_DECIMAL') FROM a"},
+        new Object[]{"SELECT JSON_EXTRACT_SCALAR_FAST(col1, '$.foo', 'DOUBLE_ARRAY') FROM a"},
+        new Object[]{"SELECT JSON_EXTRACT_SCALAR_FAST(col1, '$.foo', 'BOOLEAN_ARRAY') FROM a"},
+        new Object[]{"SELECT JSON_EXTRACT_SCALAR_FAST(col1, '$.foo', 'JSON') FROM a"},
+        new Object[]{"SELECT JSON_EXTRACT_SCALAR_FIRST_MATCH(col1, '$.foo', 'LONG', '0') FROM a"},
+        new Object[]{"SELECT JSON_EXTRACT_SCALAR_FIRST_MATCH(col1, '$.foo', 'STRING_ARRAY') FROM a"},
+        new Object[]{"SELECT JSON_EXTRACT_SCALAR_FIRST_MATCH(col1, '$.foo', 'TIMESTAMP_ARRAY') FROM a"},
         new Object[]{"SELECT ts_timestamp FROM a WHERE ts_timestamp BETWEEN TIMESTAMP '2016-01-01 00:00:00' AND "
-            + "TIMESTAMP '2016-01-01 10:00:00'"},
+              + "TIMESTAMP '2016-01-01 10:00:00'"},
         new Object[]{"SELECT ts_timestamp FROM a WHERE ts_timestamp >= CAST(1454284798000 AS TIMESTAMP)"},
         new Object[]{"SELECT TIMESTAMPADD(day, 10, NOW()) FROM a"},
         new Object[]{"SELECT ts_timestamp - CAST(123456789 AS TIMESTAMP) FROM a"},
@@ -286,7 +293,9 @@ public class QueryEnvironmentTestBase {
         // Verify type coercion in standard functions
         new Object[]{"SELECT DATEADD('DAY', 1, col7) FROM a"},
         new Object[]{"SELECT TIMESTAMPADD(DAY, 10, NOW() - 100) FROM a"},
-        new Object[]{"SELECT ts FROM a WHERE ts <= '2025-08-14 00:00:00.000000'"}
+        new Object[]{"SELECT ts FROM a WHERE ts <= '2025-08-14 00:00:00.000000'"},
+        // Aggregations on MV LONG columns
+        new Object[]{"SELECT SUMLONG(mcol2), MINLONG(mcol2), MAXLONG(mcol2) FROM e"}
     };
   }
 
@@ -320,11 +329,11 @@ public class QueryEnvironmentTestBase {
         PartitionInfo[] partitionIdToInfoMap = new PartitionInfo[numPartitions];
         for (int i = 0; i < numPartitions; i++) {
           String hostname = i < (numPartitions / 2) ? hostname1 : hostname2;
-          partitionIdToInfoMap[i] = new PartitionInfo(Collections.singleton(hostname), partitionIdToSegmentsMap.get(i));
+          partitionIdToInfoMap[i] = new PartitionInfo(Set.of(hostname), partitionIdToSegmentsMap.get(i));
         }
         TablePartitionReplicatedServersInfo tablePartitionReplicatedServersInfo =
             new TablePartitionReplicatedServersInfo(tableNameWithType, partitionColumn, "Hashcode", numPartitions,
-                partitionIdToInfoMap, Collections.emptyList());
+                partitionIdToInfoMap, List.of());
         partitionInfoMap.put(tableNameWithType, tablePartitionReplicatedServersInfo);
       }
     }
@@ -334,10 +343,8 @@ public class QueryEnvironmentTestBase {
         new WorkerManager("Broker_localhost", "localhost", reducerPort, routingManager));
   }
 
-  /**
-   * JSON test case definition for query planner test cases. Tables and schemas will come from those already defined
-   * and part of the {@code QueryEnvironment} in this base and are not part of the JSON definition for now.
-   */
+  /// JSON test case definition for query planner test cases. Tables and schemas will come from those already defined
+  /// and part of the `QueryEnvironment` in this base and are not part of the JSON definition for now.
   @JsonIgnoreProperties(ignoreUnknown = true)
   public static class QueryPlanTestCase {
     // ignores the entire query test case

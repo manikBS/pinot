@@ -30,11 +30,8 @@ import org.apache.pinot.segment.local.segment.creator.SegmentTestUtils;
 import org.apache.pinot.segment.local.segment.creator.impl.SegmentIndexCreationDriverImpl;
 import org.apache.pinot.segment.local.segment.index.converter.SegmentV1V2ToV3FormatConverter;
 import org.apache.pinot.segment.local.segment.store.SegmentLocalFSDirectory;
-import org.apache.pinot.segment.local.utils.SegmentAllIndexPreprocessThrottler;
-import org.apache.pinot.segment.local.utils.SegmentDownloadThrottler;
-import org.apache.pinot.segment.local.utils.SegmentMultiColTextIndexPreprocessThrottler;
 import org.apache.pinot.segment.local.utils.SegmentOperationsThrottler;
-import org.apache.pinot.segment.local.utils.SegmentStarTreePreprocessThrottler;
+import org.apache.pinot.segment.local.utils.SegmentOperationsThrottlerSet;
 import org.apache.pinot.segment.spi.ImmutableSegment;
 import org.apache.pinot.segment.spi.IndexSegment;
 import org.apache.pinot.segment.spi.V1Constants;
@@ -77,10 +74,10 @@ public class LoaderTest {
   private static final String VECTOR_INDEX_COL_NAME = "vector1";
   private static final int VECTOR_DIM_SIZE = 512;
 
-  private static final SegmentOperationsThrottler SEGMENT_OPERATIONS_THROTTLER =
-      new SegmentOperationsThrottler(new SegmentAllIndexPreprocessThrottler(1, 2, true),
-          new SegmentStarTreePreprocessThrottler(1, 2, true), new SegmentDownloadThrottler(1, 2, true),
-          new SegmentMultiColTextIndexPreprocessThrottler(1, 2, true));
+  private static final SegmentOperationsThrottlerSet SEGMENT_OPERATIONS_THROTTLER =
+      new SegmentOperationsThrottlerSet(new SegmentOperationsThrottler(1, 2, true),
+          new SegmentOperationsThrottler(1, 2, true), new SegmentOperationsThrottler(1, 2, true),
+          new SegmentOperationsThrottler(1, 2, true));
 
   private File _avroFile;
   private File _vectorAvroFile;
@@ -144,10 +141,8 @@ public class LoaderTest {
     testConversion();
   }
 
-  /**
-   * Format converter will leave stale directory around if there were conversion failures. This test checks loading in
-   * that scenario.
-   */
+  /// Format converter will leave stale directory around if there were conversion failures. This test checks loading in
+  /// that scenario.
   @Test
   public void testLoadWithStaleConversionDir()
       throws Exception {
@@ -229,9 +224,7 @@ public class LoaderTest {
     assertNotNull(indexSegment.getDataSource(BuiltInVirtualColumn.SEGMENTNAME));
   }
 
-  /**
-   * Tests loading default string column with empty ("") default null value.
-   */
+  /// Tests loading default string column with empty ("") default null value.
   @Test
   public void testDefaultEmptyValueStringColumn()
       throws Exception {
@@ -454,8 +447,7 @@ public class LoaderTest {
       builder.setSegmentVersion(segmentVersion.toString());
     }
     if (enableInvertedIndex) {
-      builder.setInvertedIndexColumns(List.of(NO_FORWARD_INDEX_COL_NAME))
-          .setCreateInvertedIndexDuringSegmentGeneration(true);
+      builder.setInvertedIndexColumns(List.of(NO_FORWARD_INDEX_COL_NAME));
     }
     return builder.build();
   }

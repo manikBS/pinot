@@ -74,12 +74,17 @@ public class SegmentMetadataImpl implements SegmentMetadata {
   private static final Logger LOGGER = LoggerFactory.getLogger(SegmentMetadataImpl.class);
 
   private final File _indexDir;
-  private final TreeMap<String, ColumnMetadataImpl> _columnMetadataMap;
-  private String _segmentName;
+  private final TreeMap<String, ColumnMetadata> _columnMetadataMap;
   private final Schema _schema;
+  private String _segmentName;
+  private int _totalDocs;
+  private SegmentVersion _segmentVersion;
+  private String _creatorName;
   private long _crc = Long.MIN_VALUE;
+  private long _dataCrc = Long.MIN_VALUE;
   private long _creationTime = Long.MIN_VALUE;
   private long _zkCreationTime = Long.MIN_VALUE;  // ZooKeeper creation time for upsert consistency
+  private long _zkPushTime = Long.MIN_VALUE; // ZooKeeper push time for upsert consistency
   private String _timeColumn;
   private TimeUnit _timeUnit;
   private Duration _timeGranularity;
@@ -87,10 +92,7 @@ public class SegmentMetadataImpl implements SegmentMetadata {
   private long _segmentEndTime = Long.MIN_VALUE;
   private Interval _timeInterval;
 
-  private SegmentVersion _segmentVersion;
   private List<StarTreeV2Metadata> _starTreeV2MetadataList;
-  private String _creatorName;
-  private int _totalDocs;
   private final Map<String, String> _customMap = new HashMap<>();
 
   // Fields specific to realtime table
@@ -102,9 +104,7 @@ public class SegmentMetadataImpl implements SegmentMetadata {
 
   private MultiColumnTextMetadata _multiColumnTextMetadata;
 
-  /**
-   * For segments that can only provide the inputstream to the metadata
-   */
+  /// For segments that can only provide the inputstream to the metadata
   public SegmentMetadataImpl(InputStream metadataPropertiesInputStream, InputStream creationMetaInputStream)
       throws IOException, ConfigurationException {
     _indexDir = null;
@@ -115,16 +115,15 @@ public class SegmentMetadataImpl implements SegmentMetadata {
         CommonsConfigurationUtils.fromInputStream(metadataPropertiesInputStream);
     init(segmentMetadataPropertiesConfiguration);
     setTimeInfo(segmentMetadataPropertiesConfiguration);
-    _totalDocs = segmentMetadataPropertiesConfiguration.getInt(Segment.SEGMENT_TOTAL_DOCS);
 
     loadCreationMeta(creationMetaInputStream);
   }
 
-  /**
-   * For segments on disk.
-   * <p>Index directory passed in should be top level segment directory.
-   * <p>If segment metadata file exists in multiple segment version, load the one in highest segment version.
-   */
+  /// For segments on disk.
+  ///
+  /// Index directory passed in should be top level segment directory.
+  ///
+  /// If segment metadata file exists in multiple segment version, load the one in highest segment version.
   public SegmentMetadataImpl(File indexDir)
       throws IOException, ConfigurationException {
     _indexDir = indexDir;
@@ -135,7 +134,6 @@ public class SegmentMetadataImpl implements SegmentMetadata {
         SegmentMetadataUtils.getPropertiesConfiguration(indexDir);
     init(segmentMetadataPropertiesConfiguration);
     setTimeInfo(segmentMetadataPropertiesConfiguration);
-    _totalDocs = segmentMetadataPropertiesConfiguration.getInt(Segment.SEGMENT_TOTAL_DOCS);
 
     File creationMetaFile = SegmentDirectoryPaths.findCreationMetaFile(indexDir);
     if (creationMetaFile != null) {
@@ -143,9 +141,7 @@ public class SegmentMetadataImpl implements SegmentMetadata {
     }
   }
 
-  /**
-   * For REALTIME consuming segments.
-   */
+  /// For REALTIME consuming segments.
   public SegmentMetadataImpl(String rawTableName, String segmentName, Schema schema, long creationTime) {
     _indexDir = null;
     _columnMetadataMap = null;
@@ -156,15 +152,12 @@ public class SegmentMetadataImpl implements SegmentMetadata {
     _zkCreationTime = creationTime;
   }
 
-  /**
-   * Helper method to set time related information:
-   * <ul>
-   *   <li> Time column Name. </li>
-   *   <li> Tine Unit. </li>
-   *   <li> Time Interval. </li>
-   *   <li> Start and End time. </li>
-   * </ul>
-   */
+  /// Helper method to set time related information:
+  ///
+  /// - Time column Name.
+  /// - Tine Unit.
+  /// - Time Interval.
+  /// - Start and End time.
   private void setTimeInfo(PropertiesConfiguration segmentMetadataPropertiesConfiguration) {
     _timeColumn = segmentMetadataPropertiesConfiguration.getString(Segment.TIME_COLUMN_NAME);
     if (segmentMetadataPropertiesConfiguration.containsKey(Segment.SEGMENT_START_TIME)
@@ -189,10 +182,15 @@ public class SegmentMetadataImpl implements SegmentMetadata {
   private void loadCreationMeta(File crcFile)
       throws IOException {
     if (crcFile.exists()) {
-      final DataInputStream ds = new DataInputStream(new FileInputStream(crcFile));
-      _crc = ds.readLong();
-      _creationTime = ds.readLong();
-      ds.close();
+      try (DataInputStream ds = new DataInputStream(new FileInputStream(crcFile))) {
+        _crc = ds.readLong();
+        _creationTime = ds.readLong();
+        try {
+          _dataCrc = ds.readLong();
+        } catch (IOException e) {
+          LOGGER.debug("Could not find data crc, falling back to default LONG_MIN value");
+        }
+      }
     }
   }
 
@@ -201,18 +199,26 @@ public class SegmentMetadataImpl implements SegmentMetadata {
     try (DataInputStream ds = new DataInputStream(crcFileInputStream)) {
       _crc = ds.readLong();
       _creationTime = ds.readLong();
+      try {
+        _dataCrc = ds.readLong();
+      } catch (IOException e) {
+        LOGGER.debug("Could not find data crc, falling back to default LONG_MIN value");
+      }
     }
   }
 
   private void init(PropertiesConfiguration segmentMetadata)
       throws ConfigurationException {
-    if (segmentMetadata.containsKey(Segment.SEGMENT_CREATOR_VERSION)) {
-      _creatorName = segmentMetadata.getString(Segment.SEGMENT_CREATOR_VERSION);
-    }
+    _segmentName = segmentMetadata.getString(Segment.SEGMENT_NAME);
+    _totalDocs = segmentMetadata.getInt(Segment.SEGMENT_TOTAL_DOCS);
+    _segmentVersion = segmentMetadata.getEnum(Segment.SEGMENT_VERSION, SegmentVersion.class, SegmentVersion.v1);
+    _creatorName = segmentMetadata.getString(Segment.SEGMENT_CREATOR_VERSION, null);
 
-    String versionString =
-        segmentMetadata.getString(Segment.SEGMENT_VERSION, SegmentVersion.v1.toString());
-    _segmentVersion = SegmentVersion.valueOf(versionString);
+    // Set the table name (for backward compatibility)
+    String tableName = segmentMetadata.getString(Segment.TABLE_NAME);
+    if (tableName != null) {
+      _rawTableName = TableNameBuilder.extractRawTableName(tableName);
+    }
 
     // NOTE: here we only add physical columns as virtual columns should not be loaded from metadata file
     // NOTE: getList() will always return an non-null List with trimmed strings:
@@ -225,41 +231,43 @@ public class SegmentMetadataImpl implements SegmentMetadata {
     addPhysicalColumns(segmentMetadata.getList(Segment.DATETIME_COLUMNS), physicalColumns);
     addPhysicalColumns(segmentMetadata.getList(Segment.COMPLEX_COLUMNS), physicalColumns);
 
-    // Set the table name (for backward compatibility)
-    String tableName = segmentMetadata.getString(Segment.TABLE_NAME);
-    if (tableName != null) {
-      _rawTableName = TableNameBuilder.extractRawTableName(tableName);
-    }
+    // Build column metadata map and schema. Empty segments use a stripped-down [EmptyColumnMetadata] since the
+    // shape stats (cardinality, element lengths, etc.) are meaningless when there are no rows.
+    if (_totalDocs > 0) {
+      for (String column : physicalColumns) {
+        ColumnMetadata columnMetadata =
+            ColumnMetadataImpl.fromPropertiesConfiguration(segmentMetadata, _totalDocs, column);
+        _columnMetadataMap.put(column, columnMetadata);
+        _schema.addField(columnMetadata.getFieldSpec());
+      }
 
-    // Set segment name.
-    _segmentName = segmentMetadata.getString(Segment.SEGMENT_NAME);
-
-    // Build column metadata map and schema.
-    for (String column : physicalColumns) {
-      ColumnMetadataImpl columnMetadata = ColumnMetadataImpl.fromPropertiesConfiguration(column, segmentMetadata);
-      _columnMetadataMap.put(column, columnMetadata);
-      _schema.addField(columnMetadata.getFieldSpec());
-    }
-
-    // Load index metadata
-    // Support V3 (e.g. SingleFileIndexDirectory only)
-    if (_segmentVersion == SegmentVersion.v3) {
-      File indexMapFile = new File(_indexDir, "v3" + File.separator + V1Constants.INDEX_MAP_FILE_NAME);
-      if (indexMapFile.exists()) {
-        IndexService indexService = IndexService.getInstance();
-
-        PropertiesConfiguration mapConfig = CommonsConfigurationUtils.fromFile(indexMapFile);
-        for (String key : CommonsConfigurationUtils.getKeys(mapConfig)) {
-          try {
-            String[] parsedKeys = ColumnIndexUtils.parseIndexMapKeys(key, _indexDir.getPath());
-            if (parsedKeys[2].equals(ColumnIndexUtils.MAP_KEY_NAME_SIZE)) {
-              short indexType = indexService.getNumericId(parsedKeys[1]);
-              _columnMetadataMap.get(parsedKeys[0]).addIndexSize(indexType, mapConfig.getLong(key));
+      // Load index metadata
+      // Support V3 (e.g. SingleFileIndexDirectory only). Skip for empty segments — there is no payload to size up,
+      // and [EmptyColumnMetadata] does not support `addIndexSize`.
+      if (_segmentVersion == SegmentVersion.v3) {
+        File indexMapFile = new File(_indexDir, "v3" + File.separator + V1Constants.INDEX_MAP_FILE_NAME);
+        if (indexMapFile.exists()) {
+          IndexService indexService = IndexService.getInstance();
+          PropertiesConfiguration mapConfig = CommonsConfigurationUtils.fromFile(indexMapFile);
+          for (String key : CommonsConfigurationUtils.getKeys(mapConfig)) {
+            try {
+              String[] parsedKeys = ColumnIndexUtils.parseIndexMapKeys(key, _indexDir.getPath());
+              if (parsedKeys[2].equals(ColumnIndexUtils.MAP_KEY_NAME_SIZE)) {
+                short indexType = indexService.getNumericId(parsedKeys[1]);
+                ((ColumnMetadataImpl) _columnMetadataMap.get(parsedKeys[0])).addIndexSize(indexType,
+                    mapConfig.getLong(key));
+              }
+            } catch (Exception e) {
+              LOGGER.debug("Unable to load index metadata in {} for {}!", indexMapFile, key, e);
             }
-          } catch (Exception e) {
-            LOGGER.debug("Unable to load index metadata in {} for {}!", indexMapFile, key, e);
           }
         }
+      }
+    } else {
+      for (String column : physicalColumns) {
+        ColumnMetadata columnMetadata = EmptyColumnMetadata.fromPropertiesConfiguration(segmentMetadata, column);
+        _columnMetadataMap.put(column, columnMetadata);
+        _schema.addField(columnMetadata.getFieldSpec());
       }
     }
 
@@ -300,9 +308,7 @@ public class SegmentMetadataImpl implements SegmentMetadata {
     }
   }
 
-  /**
-   * Helper method to add the physical columns from source list to destination set.
-   */
+  /// Helper method to add the physical columns from source list to destination set.
   private static void addPhysicalColumns(List<Object> src, Set<String> dest) {
     for (Object o : src) {
       String column = o.toString();
@@ -364,6 +370,11 @@ public class SegmentMetadataImpl implements SegmentMetadata {
   }
 
   @Override
+  public String getDataCrc() {
+    return String.valueOf(_dataCrc);
+  }
+
+  @Override
   public SegmentVersion getVersion() {
     return _segmentVersion;
   }
@@ -394,22 +405,33 @@ public class SegmentMetadataImpl implements SegmentMetadata {
     return _creationTime;
   }
 
-  /**
-   * Returns the ZooKeeper creation time for upsert consistency.
-   * This refers to the time set by controller while creating the consuming segment. It is used to ensure consistent
-   * creation time across replicas for upsert operations.
-   * @return ZK creation time in milliseconds, or Long.MIN_VALUE if not set
-   */
+  /// Returns the ZooKeeper creation time for upsert consistency.
+  /// For REALTIME tables, this is set by the controller when the consuming segment is created, ensuring consistent
+  /// creation time across replicas. For segments loaded from disk, this returns `Long.MIN_VALUE` until
+  /// [#setZkCreationTime(long)] is explicitly called (e.g. from ZK metadata during segment loading).
+  /// @return ZK creation time in milliseconds, or `Long.MIN_VALUE` if not explicitly set
   public long getZkCreationTime() {
     return _zkCreationTime;
   }
 
-  /**
-   * Sets the ZooKeeper creation time for upsert consistency.
-   * @param zkCreationTime ZK creation time in milliseconds
-   */
+  /// Sets the ZooKeeper creation time for upsert consistency.
+  /// @param zkCreationTime ZK creation time in milliseconds
   public void setZkCreationTime(long zkCreationTime) {
     _zkCreationTime = zkCreationTime;
+  }
+
+  /// Returns the ZooKeeper push time for upsert consistency.
+  /// This refers to the time set by controller while pushing the segment. It is used to ensure consistent
+  /// push time across replicas for upsert operations.
+  /// @return ZK push time in milliseconds, or Long.MIN_VALUE if not set
+  public long getZkPushTime() {
+    return _zkPushTime;
+  }
+
+  /// Sets the ZooKeeper push time for upsert consistency.
+  /// @param zkPushTime ZK push time in milliseconds
+  public void setZkPushTime(long zkPushTime) {
+    _zkPushTime = zkPushTime;
   }
 
   @Override
@@ -420,6 +442,11 @@ public class SegmentMetadataImpl implements SegmentMetadata {
   @Override
   public long getLatestIngestionTimestamp() {
     return Long.MIN_VALUE;
+  }
+
+  @Override
+  public long getMinimumIngestionLagMs() {
+    return Long.MAX_VALUE;
   }
 
   @Nullable
@@ -451,7 +478,7 @@ public class SegmentMetadataImpl implements SegmentMetadata {
 
   @Override
   public TreeMap<String, ColumnMetadata> getColumnMetadataMap() {
-    return (TreeMap<String, ColumnMetadata>) (TreeMap<String, ?>) _columnMetadataMap;
+    return _columnMetadataMap;
   }
 
   @Override
@@ -467,6 +494,9 @@ public class SegmentMetadataImpl implements SegmentMetadata {
     segmentMetadata.put("segmentName", _segmentName);
     segmentMetadata.put("schemaName", _schema != null ? _schema.getSchemaName() : null);
     segmentMetadata.put("crc", _crc);
+    if (_dataCrc != Long.MIN_VALUE) {
+      segmentMetadata.put("dataCrc", _dataCrc);
+    }
     segmentMetadata.put("creationTimeMillis", _creationTime);
     TimeZone timeZone = TimeZone.getTimeZone("UTC");
     DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss:SSS' UTC'");
@@ -503,7 +533,7 @@ public class SegmentMetadataImpl implements SegmentMetadata {
 
     if (_columnMetadataMap != null) {
       ArrayNode columnsMetadata = JsonUtils.newArrayNode();
-      for (Map.Entry<String, ColumnMetadataImpl> entry : _columnMetadataMap.entrySet()) {
+      for (Map.Entry<String, ColumnMetadata> entry : _columnMetadataMap.entrySet()) {
         if (columnFilter == null || columnFilter.contains(entry.getKey())) {
           columnsMetadata.add(JsonUtils.objectToJsonNode(entry.getValue()));
         }

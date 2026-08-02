@@ -46,7 +46,8 @@ import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.data.FieldSpec;
 import org.apache.pinot.spi.data.Schema;
 import org.apache.pinot.spi.env.PinotConfiguration;
-import org.apache.pinot.spi.utils.CommonConstants;
+import org.apache.pinot.spi.query.QueryThreadContext;
+import org.apache.pinot.spi.utils.CommonConstants.Broker;
 import org.apache.pinot.spi.utils.builder.TableConfigBuilder;
 import org.apache.pinot.sql.parsers.CalciteSqlCompiler;
 import org.testng.annotations.AfterClass;
@@ -58,15 +59,12 @@ import static org.mockito.Mockito.mock;
 import static org.testng.Assert.assertEquals;
 
 
-/** query-based tests for selection-orderby */
+/// query-based tests for selection-orderby
 public class SelectionOrderByTest {
 
   @Test
   public void testSingleTable()
       throws IOException {
-    BrokerReduceService brokerReduceService =
-        new BrokerReduceService(
-            new PinotConfiguration(Map.of(CommonConstants.Broker.CONFIG_OF_MAX_REDUCE_THREADS_PER_QUERY, 2)));
     BrokerRequest brokerRequest =
         CalciteSqlCompiler.compileToBrokerRequest("SELECT col1 FROM testTable ORDER BY col1");
     DataSchema dataSchema =
@@ -91,11 +89,7 @@ public class SelectionOrderByTest {
       ServerRoutingInstance instance = new ServerRoutingInstance("localhost", i, TableType.OFFLINE);
       dataTableMap.put(instance, dataTable);
     }
-    long reduceTimeoutMs = 100000;
-    BrokerResponseNative brokerResponse =
-        brokerReduceService.reduceOnDataTable(brokerRequest, brokerRequest, dataTableMap, reduceTimeoutMs,
-            mock(BrokerMetrics.class));
-    brokerReduceService.shutDown();
+    BrokerResponseNative brokerResponse = reduce(brokerRequest, dataTableMap);
 
     ResultTable resultTable = brokerResponse.getResultTable();
     List<Object[]> rows = resultTable.getRows();
@@ -108,9 +102,6 @@ public class SelectionOrderByTest {
   @Test
   public void testSingleTableLimitOffsetSmallerThanResultSize()
       throws IOException {
-    BrokerReduceService brokerReduceService =
-        new BrokerReduceService(
-            new PinotConfiguration(Map.of(CommonConstants.Broker.CONFIG_OF_MAX_REDUCE_THREADS_PER_QUERY, 2)));
     BrokerRequest brokerRequest =
         CalciteSqlCompiler.compileToBrokerRequest("SELECT col1 FROM testTable ORDER BY col1 LIMIT 1 OFFSET 1");
     DataSchema dataSchema =
@@ -135,11 +126,7 @@ public class SelectionOrderByTest {
       ServerRoutingInstance instance = new ServerRoutingInstance("localhost", i, TableType.OFFLINE);
       dataTableMap.put(instance, dataTable);
     }
-    long reduceTimeoutMs = 100000;
-    BrokerResponseNative brokerResponse =
-        brokerReduceService.reduceOnDataTable(brokerRequest, brokerRequest, dataTableMap, reduceTimeoutMs,
-            mock(BrokerMetrics.class));
-    brokerReduceService.shutDown();
+    BrokerResponseNative brokerResponse = reduce(brokerRequest, dataTableMap);
 
     ResultTable resultTable = brokerResponse.getResultTable();
     List<Object[]> rows = resultTable.getRows();
@@ -150,9 +137,6 @@ public class SelectionOrderByTest {
   @Test
   public void testSingleTableLimitOffsetLargerThanResultSize()
       throws IOException {
-    BrokerReduceService brokerReduceService =
-        new BrokerReduceService(
-            new PinotConfiguration(Map.of(CommonConstants.Broker.CONFIG_OF_MAX_REDUCE_THREADS_PER_QUERY, 2)));
     BrokerRequest brokerRequest =
         CalciteSqlCompiler.compileToBrokerRequest("SELECT col1 FROM testTable ORDER BY col1 LIMIT 3 OFFSET 1");
     DataSchema dataSchema =
@@ -177,11 +161,7 @@ public class SelectionOrderByTest {
       ServerRoutingInstance instance = new ServerRoutingInstance("localhost", i, TableType.OFFLINE);
       dataTableMap.put(instance, dataTable);
     }
-    long reduceTimeoutMs = 100000;
-    BrokerResponseNative brokerResponse =
-        brokerReduceService.reduceOnDataTable(brokerRequest, brokerRequest, dataTableMap, reduceTimeoutMs,
-            mock(BrokerMetrics.class));
-    brokerReduceService.shutDown();
+    BrokerResponseNative brokerResponse = reduce(brokerRequest, dataTableMap);
 
     ResultTable resultTable = brokerResponse.getResultTable();
     List<Object[]> rows = resultTable.getRows();
@@ -193,9 +173,6 @@ public class SelectionOrderByTest {
   @Test
   public void testSingleTableOffsetLargerThanResultSize()
       throws IOException {
-    BrokerReduceService brokerReduceService =
-        new BrokerReduceService(
-            new PinotConfiguration(Map.of(CommonConstants.Broker.CONFIG_OF_MAX_REDUCE_THREADS_PER_QUERY, 2)));
     BrokerRequest brokerRequest =
         CalciteSqlCompiler.compileToBrokerRequest("SELECT col1 FROM testTable ORDER BY col1 LIMIT 1 OFFSET 4");
     DataSchema dataSchema =
@@ -220,11 +197,7 @@ public class SelectionOrderByTest {
       ServerRoutingInstance instance = new ServerRoutingInstance("localhost", i, TableType.OFFLINE);
       dataTableMap.put(instance, dataTable);
     }
-    long reduceTimeoutMs = 100000;
-    BrokerResponseNative brokerResponse =
-        brokerReduceService.reduceOnDataTable(brokerRequest, brokerRequest, dataTableMap, reduceTimeoutMs,
-            mock(BrokerMetrics.class));
-    brokerReduceService.shutDown();
+    BrokerResponseNative brokerResponse = reduce(brokerRequest, dataTableMap);
 
     ResultTable resultTable = brokerResponse.getResultTable();
     List<Object[]> rows = resultTable.getRows();
@@ -234,9 +207,6 @@ public class SelectionOrderByTest {
   @Test
   public void testSingleTableWithNull()
       throws IOException {
-    BrokerReduceService brokerReduceService =
-        new BrokerReduceService(
-            new PinotConfiguration(Map.of(CommonConstants.Broker.CONFIG_OF_MAX_REDUCE_THREADS_PER_QUERY, 2)));
     BrokerRequest brokerRequest =
         CalciteSqlCompiler.compileToBrokerRequest("SELECT col1 FROM testTable ORDER BY col1");
     DataSchema dataSchema =
@@ -255,11 +225,7 @@ public class SelectionOrderByTest {
       ServerRoutingInstance instance = new ServerRoutingInstance("localhost", i, TableType.OFFLINE);
       dataTableMap.put(instance, dataTable);
     }
-    long reduceTimeoutMs = 100000;
-    BrokerResponseNative brokerResponse =
-        brokerReduceService.reduceOnDataTable(brokerRequest, brokerRequest, dataTableMap, reduceTimeoutMs,
-            mock(BrokerMetrics.class));
-    brokerReduceService.shutDown();
+    BrokerResponseNative brokerResponse = reduce(brokerRequest, dataTableMap);
 
     ResultTable resultTable = brokerResponse.getResultTable();
     List<Object[]> rows = resultTable.getRows();
@@ -272,9 +238,6 @@ public class SelectionOrderByTest {
   @Test
   public void testSingleTableWithNullHandlingEnabled()
       throws IOException {
-    BrokerReduceService brokerReduceService =
-        new BrokerReduceService(
-            new PinotConfiguration(Map.of(CommonConstants.Broker.CONFIG_OF_MAX_REDUCE_THREADS_PER_QUERY, 2)));
     BrokerRequest brokerRequest =
         CalciteSqlCompiler.compileToBrokerRequest(
             "SET enableNullHandling=true; SELECT col1 FROM testTable ORDER BY col1");
@@ -294,11 +257,7 @@ public class SelectionOrderByTest {
       ServerRoutingInstance instance = new ServerRoutingInstance("localhost", i, TableType.OFFLINE);
       dataTableMap.put(instance, dataTable);
     }
-    long reduceTimeoutMs = 100000;
-    BrokerResponseNative brokerResponse =
-        brokerReduceService.reduceOnDataTable(brokerRequest, brokerRequest, dataTableMap, reduceTimeoutMs,
-            mock(BrokerMetrics.class));
-    brokerReduceService.shutDown();
+    BrokerResponseNative brokerResponse = reduce(brokerRequest, dataTableMap);
 
     ResultTable resultTable = brokerResponse.getResultTable();
     List<Object[]> rows = resultTable.getRows();
@@ -306,6 +265,17 @@ public class SelectionOrderByTest {
     assertEquals(rows.get(0), new Object[]{1});
     assertEquals(rows.get(1), new Object[]{2});
     assertEquals(rows.get(2), new Object[]{null});
+  }
+
+  private BrokerResponseNative reduce(BrokerRequest brokerRequest, Map<ServerRoutingInstance, DataTable> dataTableMap) {
+    BrokerReduceService brokerReduceService =
+        new BrokerReduceService(new PinotConfiguration(Map.of(Broker.CONFIG_OF_MAX_REDUCE_THREADS_PER_QUERY, 2)));
+    try (QueryThreadContext ignore = QueryThreadContext.openForSseTest()) {
+      return brokerReduceService.reduceOnDataTable(brokerRequest, brokerRequest, dataTableMap, 10_000L,
+          mock(BrokerMetrics.class));
+    } finally {
+      brokerReduceService.shutDown();
+    }
   }
 
   @Test
@@ -322,7 +292,7 @@ public class SelectionOrderByTest {
             new Object[]{null}
         )
         .whenQuery("select myField from testTable order by myField")
-        .thenResultIs("INTEGER",
+        .thenResultIs("INT",
             "-2147483648",
             "1",
             "2",
@@ -344,7 +314,7 @@ public class SelectionOrderByTest {
             new Object[]{null}
         )
         .whenQuery("select myField from testTable order by myField")
-        .thenResultIs("INTEGER",
+        .thenResultIs("INT",
             "1",
             "2",
             "3",
@@ -366,7 +336,7 @@ public class SelectionOrderByTest {
             new Object[]{null, null}
         )
         .whenQuery("select field1, field2 from testTable2 order by field1")
-        .thenResultIs("INTEGER|INTEGER",
+        .thenResultIs("INT|INT",
             "-2147483648|-2147483648",
             "1|5",
             "2|3",
@@ -388,7 +358,7 @@ public class SelectionOrderByTest {
             new Object[]{null, 2}
         )
         .whenQuery("select field1, field2 from testTable2 order by field1")
-        .thenResultIs("INTEGER|INTEGER",
+        .thenResultIs("INT|INT",
             "1|5",
             "2|3",
             "3|4",
@@ -410,7 +380,7 @@ public class SelectionOrderByTest {
             new Object[]{null, 2}
         )
         .whenQuery("select field1, field2 from testTable2 order by field1 nulls first")
-        .thenResultIs("INTEGER|INTEGER",
+        .thenResultIs("INT|INT",
             "null|2",
             "1|5",
             "2|3",
@@ -432,7 +402,7 @@ public class SelectionOrderByTest {
             new Object[]{null, null}
         )
         .whenQuery("select field1, field2 from testTable2 order by field1 desc")
-        .thenResultIs("INTEGER|INTEGER",
+        .thenResultIs("INT|INT",
             "3|4",
             "2|3",
             "1|5",
@@ -455,7 +425,7 @@ public class SelectionOrderByTest {
             new Object[]{null, 2}
         )
         .whenQuery("select field1, field2 from testTable2 order by field1 desc")
-        .thenResultIs("INTEGER|INTEGER",
+        .thenResultIs("INT|INT",
             "null|2",
             "4|4",
             "3|0",
@@ -479,7 +449,7 @@ public class SelectionOrderByTest {
             new Object[]{null, 2}
         )
         .whenQuery("select field1, field2 from testTable2 order by field1 desc nulls last")
-        .thenResultIs("INTEGER|INTEGER",
+        .thenResultIs("INT|INT",
             "4|4",
             "3|0",
             "2|3",
@@ -503,7 +473,7 @@ public class SelectionOrderByTest {
             new Object[]{null, 2}
         )
         .whenQuery("select field1, field2 from testTable2 order by field1, field2")
-        .thenResultIs("INTEGER|INTEGER",
+        .thenResultIs("INT|INT",
             "-2147483648|2",
             "1|5",
             "2|3",
@@ -528,7 +498,7 @@ public class SelectionOrderByTest {
             new Object[]{null, 2}
         )
         .whenQuery("select field1, field2 from testTable2 order by field1, field2")
-        .thenResultIs("INTEGER|INTEGER",
+        .thenResultIs("INT|INT",
             "1|5",
             "2|3",
             "2|4",
@@ -554,7 +524,7 @@ public class SelectionOrderByTest {
             new Object[]{null, 2}
         )
         .whenQuery("select field1, field2 from testTable2 order by field1 desc, field2")
-        .thenResultIs("INTEGER|INTEGER",
+        .thenResultIs("INT|INT",
             "3|4",
             "2|3",
             "2|4",
@@ -580,7 +550,7 @@ public class SelectionOrderByTest {
             new Object[]{null, 2}
         )
         .whenQuery("select field1, field2 from testTable2 order by field1 desc, field2")
-        .thenResultIs("INTEGER|INTEGER",
+        .thenResultIs("INT|INT",
             "null|2",
             "null|4",
             "3|4",
@@ -604,7 +574,7 @@ public class SelectionOrderByTest {
             new Object[]{null}
         )
         .whenQuery("select myField from testTable order by myField offset 1")
-        .thenResultIs("INTEGER",
+        .thenResultIs("INT",
             "1",
             "2",
             "3"
@@ -625,7 +595,7 @@ public class SelectionOrderByTest {
             new Object[]{null}
         )
         .whenQuery("select myField from testTable order by myField offset 1 limit 2")
-        .thenResultIs("INTEGER",
+        .thenResultIs("INT",
             "1",
             "2"
         );
@@ -644,7 +614,7 @@ public class SelectionOrderByTest {
             new Object[]{2}
         )
         .whenQuery("select myField from testTable order by myField offset 1 limit 3")
-        .thenResultIs("INTEGER",
+        .thenResultIs("INT",
             "2",
             "3"
         );
@@ -664,7 +634,7 @@ public class SelectionOrderByTest {
             new Object[]{null}
         )
         .whenQuery("select myField from testTable order by myField offset 10")
-        .thenResultIs("INTEGER"
+        .thenResultIs("INT"
         );
   }
 

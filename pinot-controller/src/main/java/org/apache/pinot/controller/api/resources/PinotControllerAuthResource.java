@@ -59,15 +59,14 @@ public class PinotControllerAuthResource {
   @Context
   HttpHeaders _httpHeaders;
 
-  /**
-   * Verify a token is both authenticated and authorized to perform an operation.
-   *
-   * @param tableName table name (optional)
-   * @param accessType access type (optional)
-   * @param endpointUrl endpoint url (optional)
-   *
-   * @return {@code true} if authenticated and authorized, {@code false} otherwise
-   */
+  /// Verify a token is both authenticated and authorized to perform an operation.
+  ///
+  /// @param tableName table name (optional)
+  /// @param accessType access type (optional)
+  /// @param endpointUrl endpoint url (optional)
+  ///
+  /// @return `true` if authenticated and authorized, `false` otherwise
+  @Deprecated
   @GET
   @Path("auth/verify")
   @Authorize(targetType = TargetType.CLUSTER, action = Actions.Cluster.GET_AUTH)
@@ -84,12 +83,33 @@ public class PinotControllerAuthResource {
     return accessControl.hasAccess(tableName, accessType, _httpHeaders, endpointUrl);
   }
 
-  /**
-   * Provide the auth workflow configuration for the Pinot UI to perform user authentication. Currently supports NONE
-   * (no auth) and BASIC (basic auth with username and password)
-   *
-   * @return auth workflow info/configuration
-   */
+  /// Verify a token is both authenticated and authorized to perform an operation.
+  ///
+  /// @param tableName table name (optional)
+  /// @param accessType access type (optional)
+  /// @param endpointUrl endpoint url (optional)
+  ///
+  /// @return `true` if authenticated and authorized, `false` otherwise
+  @GET
+  @Path("auth/verify/v2")
+  @Authorize(targetType = TargetType.CLUSTER, action = Actions.Cluster.GET_AUTH)
+  @Produces(MediaType.APPLICATION_JSON)
+  @ApiOperation(value = "Check whether authentication is enabled")
+  @ApiResponses(value = {
+      @ApiResponse(code = 200, message = "Verification result provided"),
+      @ApiResponse(code = 500, message = "Verification error")
+  })
+  public boolean verifyV2(@ApiParam(value = "Table name without type") @QueryParam("tableName") String tableName,
+      @ApiParam(value = "API access type") @DefaultValue("READ") @QueryParam("accessType") AccessType accessType,
+      @ApiParam(value = "Endpoint URL") @QueryParam("endpointUrl") String endpointUrl) {
+    AccessControl accessControl = _accessControlFactory.create();
+    return accessControl.hasAccess(_httpHeaders, TargetType.CLUSTER);
+  }
+
+  /// Provide the auth workflow configuration for the Pinot UI to perform user authentication. Currently supports NONE
+  /// (no auth) and BASIC (basic auth with username and password)
+  ///
+  /// @return auth workflow info/configuration
   @GET
   @Path("auth/info")
   @Authorize(targetType = TargetType.CLUSTER, action = Actions.Cluster.GET_AUTH)

@@ -31,6 +31,7 @@ import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
+import java.util.SortedSet;
 import java.util.TreeSet;
 import javax.annotation.Nullable;
 import org.apache.pinot.common.request.context.predicate.InPredicate;
@@ -39,38 +40,31 @@ import org.apache.pinot.common.utils.HashUtil;
 import org.apache.pinot.core.query.request.context.QueryContext;
 import org.apache.pinot.segment.spi.index.reader.Dictionary;
 import org.apache.pinot.spi.data.FieldSpec.DataType;
-import org.apache.pinot.spi.data.MultiValueVisitor;
 import org.apache.pinot.spi.utils.ByteArray;
 
 
-/**
- * Factory for IN predicate evaluators.
- */
+/// Factory for IN predicate evaluators.
 public class InPredicateEvaluatorFactory {
   private InPredicateEvaluatorFactory() {
   }
 
-  /**
-   * Create a new instance of dictionary based IN predicate evaluator.
-   *
-   * @param inPredicate  IN predicate to evaluate
-   * @param dictionary   Dictionary for the column
-   * @param dataType     Data type for the column
-   * @param queryContext Query context
-   * @return Dictionary based IN predicate evaluator
-   */
+  /// Create a new instance of dictionary based IN predicate evaluator.
+  ///
+  /// @param inPredicate  IN predicate to evaluate
+  /// @param dictionary   Dictionary for the column
+  /// @param dataType     Data type for the column
+  /// @param queryContext Query context
+  /// @return Dictionary based IN predicate evaluator
   public static BaseDictionaryBasedPredicateEvaluator newDictionaryBasedEvaluator(InPredicate inPredicate,
       Dictionary dictionary, DataType dataType, @Nullable QueryContext queryContext) {
     return new DictionaryBasedInPredicateEvaluator(inPredicate, dictionary, dataType, queryContext);
   }
 
-  /**
-   * Create a new instance of raw value based IN predicate evaluator.
-   *
-   * @param inPredicate IN predicate to evaluate
-   * @param dataType Data type for the column
-   * @return Raw value based IN predicate evaluator
-   */
+  /// Create a new instance of raw value based IN predicate evaluator.
+  ///
+  /// @param inPredicate IN predicate to evaluate
+  /// @param dataType Data type for the column
+  /// @return Raw value based IN predicate evaluator
   public static InRawPredicateEvaluator newRawValueBasedEvaluator(InPredicate inPredicate, DataType dataType) {
     switch (dataType) {
       case INT: {
@@ -206,10 +200,28 @@ public class InPredicateEvaluatorFactory {
       super(predicate);
     }
 
-    /**
-     * Visits the matching value of this predicate.
-     */
-    public abstract <R> R accept(MultiValueVisitor<R> visitor);
+    /// Visits the matching values of this predicate.
+    public abstract <R> R accept(Visitor<R> visitor);
+
+    /// Visitor for the matching values of an IN predicate, dispatched by the stored value type.
+    ///
+    /// The `BigDecimal` matching values are delivered in a [SortedSet] because `BigDecimal`'s `compareTo` is not
+    /// consistent with `equals` (e.g. `3.0` and `3` compare equal).
+    public interface Visitor<R> {
+      R visitInt(IntSet matchingValues);
+
+      R visitLong(LongSet matchingValues);
+
+      R visitFloat(FloatSet matchingValues);
+
+      R visitDouble(DoubleSet matchingValues);
+
+      R visitBigDecimal(SortedSet<BigDecimal> matchingValues);
+
+      R visitString(Set<String> matchingValues);
+
+      R visitBytes(Set<ByteArray> matchingValues);
+    }
   }
 
   private static final class IntRawValueBasedInPredicateEvaluator extends InRawPredicateEvaluator {
@@ -249,8 +261,8 @@ public class InPredicateEvaluatorFactory {
     }
 
     @Override
-    public <R> R accept(MultiValueVisitor<R> visitor) {
-      return visitor.visitInt(_matchingValues.toIntArray());
+    public <R> R accept(Visitor<R> visitor) {
+      return visitor.visitInt(_matchingValues);
     }
   }
 
@@ -291,8 +303,8 @@ public class InPredicateEvaluatorFactory {
     }
 
     @Override
-    public <R> R accept(MultiValueVisitor<R> visitor) {
-      return visitor.visitLong(_matchingValues.toLongArray());
+    public <R> R accept(Visitor<R> visitor) {
+      return visitor.visitLong(_matchingValues);
     }
   }
 
@@ -333,8 +345,8 @@ public class InPredicateEvaluatorFactory {
     }
 
     @Override
-    public <R> R accept(MultiValueVisitor<R> visitor) {
-      return visitor.visitFloat(_matchingValues.toFloatArray());
+    public <R> R accept(Visitor<R> visitor) {
+      return visitor.visitFloat(_matchingValues);
     }
   }
 
@@ -375,8 +387,8 @@ public class InPredicateEvaluatorFactory {
     }
 
     @Override
-    public <R> R accept(MultiValueVisitor<R> visitor) {
-      return visitor.visitDouble(_matchingValues.toDoubleArray());
+    public <R> R accept(Visitor<R> visitor) {
+      return visitor.visitDouble(_matchingValues);
     }
   }
 
@@ -410,8 +422,8 @@ public class InPredicateEvaluatorFactory {
     }
 
     @Override
-    public <R> R accept(MultiValueVisitor<R> visitor) {
-      return visitor.visitBigDecimal(_matchingValues.toArray(new BigDecimal[0]));
+    public <R> R accept(Visitor<R> visitor) {
+      return visitor.visitBigDecimal(_matchingValues);
     }
   }
 
@@ -439,8 +451,8 @@ public class InPredicateEvaluatorFactory {
     }
 
     @Override
-    public <R> R accept(MultiValueVisitor<R> visitor) {
-      return visitor.visitString(_matchingValues.toArray(new String[0]));
+    public <R> R accept(Visitor<R> visitor) {
+      return visitor.visitString(_matchingValues);
     }
   }
 
@@ -468,9 +480,8 @@ public class InPredicateEvaluatorFactory {
     }
 
     @Override
-    public <R> R accept(MultiValueVisitor<R> visitor) {
-      byte[][] bytes = _matchingValues.stream().map(ByteArray::getBytes).toArray(byte[][]::new);
-      return visitor.visitBytes(bytes);
+    public <R> R accept(Visitor<R> visitor) {
+      return visitor.visitBytes(_matchingValues);
     }
   }
 }

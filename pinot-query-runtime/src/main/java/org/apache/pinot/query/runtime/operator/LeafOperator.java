@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
@@ -44,6 +45,7 @@ import org.apache.pinot.common.utils.DataSchema.ColumnDataType;
 import org.apache.pinot.common.utils.config.QueryOptionsUtils;
 import org.apache.pinot.core.operator.blocks.InstanceResponseBlock;
 import org.apache.pinot.core.operator.blocks.results.BaseResultsBlock;
+import org.apache.pinot.core.operator.blocks.results.BaseResultsBlock.EarlyTerminationReason;
 import org.apache.pinot.core.operator.blocks.results.ExplainV2ResultBlock;
 import org.apache.pinot.core.operator.blocks.results.MetadataResultsBlock;
 import org.apache.pinot.core.operator.blocks.results.SelectionResultsBlock;
@@ -60,11 +62,12 @@ import org.apache.pinot.query.runtime.blocks.MseBlock;
 import org.apache.pinot.query.runtime.blocks.RowHeapDataBlock;
 import org.apache.pinot.query.runtime.blocks.SuccessMseBlock;
 import org.apache.pinot.query.runtime.operator.utils.TypeUtils;
+import org.apache.pinot.query.runtime.plan.MultiStageQueryStats;
 import org.apache.pinot.query.runtime.plan.OpChainExecutionContext;
-import org.apache.pinot.spi.accounting.ThreadExecutionContext;
 import org.apache.pinot.spi.exception.EarlyTerminationException;
 import org.apache.pinot.spi.exception.QueryErrorCode;
-import org.apache.pinot.spi.trace.Tracing;
+import org.apache.pinot.spi.exception.TerminationException;
+import org.apache.pinot.spi.query.QueryThreadContext;
 import org.apache.pinot.spi.utils.CommonConstants.Broker.Request.QueryOptionValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -94,6 +97,8 @@ public class LeafOperator extends MultiStageOperator {
   private final StatMap<StatKey> _statMap = new StatMap<>(StatKey.class);
   private final AtomicReference<ErrorMseBlock> _errorBlock = new AtomicReference<>();
   private final ResultsBlockStreamer _resultsBlockStreamer = this::addResultsBlock;
+  @Nullable
+  private final MultiStageQueryStats _pipelineBreakerStats;
 
   // Use a limit-sized BlockingQueue to store the results blocks and apply back pressure to the single-stage threads
   @VisibleForTesting
@@ -105,6 +110,16 @@ public class LeafOperator extends MultiStageOperator {
 
   public LeafOperator(OpChainExecutionContext context, List<ServerQueryRequest> requests, DataSchema dataSchema,
       QueryExecutor queryExecutor, ExecutorService executorService) {
+    this(context, requests, dataSchema, queryExecutor, executorService, null);
+  }
+
+  public LeafOperator(
+      OpChainExecutionContext context,
+      List<ServerQueryRequest> requests,
+      DataSchema dataSchema,
+      QueryExecutor queryExecutor,
+      ExecutorService executorService,
+      @Nullable MultiStageQueryStats pipelineBreakerStats) {
     super(context);
     int numRequests = requests.size();
     Preconditions.checkArgument(numRequests == 1 || numRequests == 2, "Expected 1 or 2 requests, got: %s", numRequests);
@@ -118,6 +133,7 @@ public class LeafOperator extends MultiStageOperator {
     Integer maxStreamingPendingBlocks = QueryOptionsUtils.getMaxStreamingPendingBlocks(context.getOpChainMetadata());
     _blockingQueue = new ArrayBlockingQueue<>(maxStreamingPendingBlocks != null ? maxStreamingPendingBlocks
         : QueryOptionValue.DEFAULT_MAX_STREAMING_PENDING_BLOCKS);
+    _pipelineBreakerStats = pipelineBreakerStats;
   }
 
   public List<ServerQueryRequest> getRequests() {
@@ -152,6 +168,19 @@ public class LeafOperator extends MultiStageOperator {
   }
 
   @Override
+  protected MultiStageQueryStats calculateUpstreamStats() {
+    // Return a COPY, not the shared instance. calculateStats() runs more than once per opchain (e.g. when the
+    // MailboxSendOperator serializes its EOS stats and again from the scheduler's completion callback that feeds the
+    // stream-stats listener), and the base calculateStats() appends this operator's entry to the returned object.
+    // Handing back the shared _pipelineBreakerStats would append LEAF (+ the downstream MAILBOX_SEND) once per call,
+    // duplicating the leaf opchain's own operators in the flat stats list. A non-pipeline-breaker leaf is immune
+    // because it returns a fresh emptyStats() each call.
+    return _pipelineBreakerStats != null
+        ? MultiStageQueryStats.copy(_pipelineBreakerStats)
+        : MultiStageQueryStats.emptyStats(_context.getStageId());
+  }
+
+  @Override
   public String toExplainString() {
     return EXPLAIN_NAME;
   }
@@ -172,17 +201,17 @@ public class LeafOperator extends MultiStageOperator {
           _blockingQueue.poll(_context.getPassiveDeadlineMs() - System.currentTimeMillis(), TimeUnit.MILLISECONDS);
     } catch (InterruptedException e) {
       terminateAndClearResultsBlocks();
-      return CANCELLED_BLOCK;
+      return replaceWithTerminateExceptionIfAvailable(CANCELLED_BLOCK);
     }
     if (resultsBlock == null) {
       terminateAndClearResultsBlocks();
-      return TIMEOUT_BLOCK;
+      return replaceWithTerminateExceptionIfAvailable(TIMEOUT_BLOCK);
     }
     // Terminate when there is error block
     ErrorMseBlock errorBlock = getErrorBlock();
     if (errorBlock != null) {
       terminateAndClearResultsBlocks();
-      return errorBlock;
+      return replaceWithTerminateExceptionIfAvailable(errorBlock);
     }
     if (resultsBlock == LAST_RESULTS_BLOCK) {
       _terminated = true;
@@ -191,6 +220,14 @@ public class LeafOperator extends MultiStageOperator {
       // Regular data block
       return composeMseBlock(resultsBlock);
     }
+  }
+
+  /// Check terminate exception and use it as the error block if exists. We want to return the termination reason when
+  /// query is explicitly terminated.
+  private MseBlock replaceWithTerminateExceptionIfAvailable(ErrorMseBlock errorBlock) {
+    TerminationException terminateException = QueryThreadContext.getTerminateException();
+    return terminateException != null ? ErrorMseBlock.fromError(terminateException.getErrorCode(),
+        terminateException.getMessage()) : errorBlock;
   }
 
   public ExplainedNode explain() {
@@ -210,17 +247,20 @@ public class LeafOperator extends MultiStageOperator {
             _blockingQueue.poll(_context.getPassiveDeadlineMs() - System.currentTimeMillis(), TimeUnit.MILLISECONDS);
       } catch (InterruptedException e) {
         terminateAndClearResultsBlocks();
+        checkTerminateException();
         Thread.currentThread().interrupt();
         throw new RuntimeException("Interrupted while waiting for results block", e);
       }
       if (resultsBlock == null) {
         terminateAndClearResultsBlocks();
+        checkTerminateException();
         throw new RuntimeException("Timed out waiting for results block");
       }
       // Terminate when there is error block
       ErrorMseBlock errorBlock = getErrorBlock();
       if (errorBlock != null) {
         terminateAndClearResultsBlocks();
+        checkTerminateException();
         throw new RuntimeException("Received error block: " + errorBlock.getErrorMessages());
       }
       if (resultsBlock == LAST_RESULTS_BLOCK) {
@@ -243,8 +283,15 @@ public class LeafOperator extends MultiStageOperator {
         attributes);
   }
 
+  private void checkTerminateException() {
+    TerminationException terminateException = QueryThreadContext.getTerminateException();
+    if (terminateException != null) {
+      throw terminateException;
+    }
+  }
+
   @Override
-  protected StatMap<?> copyStatMaps() {
+  public StatMap<StatKey> copyStatMaps() {
     return new StatMap<>(_statMap);
   }
 
@@ -266,6 +313,7 @@ public class LeafOperator extends MultiStageOperator {
 
   @VisibleForTesting
   void cancelSseTasks() {
+    terminateAndClearResultsBlocks();
     Future<?> executionFuture = _executionFuture;
     if (executionFuture != null) {
       executionFuture.cancel(true);
@@ -320,8 +368,11 @@ public class LeafOperator extends MultiStageOperator {
         case NUM_GROUPS_WARNING_LIMIT_REACHED:
           _statMap.merge(StatKey.NUM_GROUPS_WARNING_LIMIT_REACHED, Boolean.parseBoolean(entry.getValue()));
           break;
+        case LITE_MODE_LEAF_STAGE_LIMIT_REACHED:
+          _statMap.merge(StatKey.LITE_MODE_LEAF_STAGE_LIMIT_REACHED, Boolean.parseBoolean(entry.getValue()));
+          break;
         case TIME_USED_MS:
-          _statMap.merge(StatKey.EXECUTION_TIME_MS, Long.parseLong(entry.getValue()));
+          _statMap.merge(StatKey.SSE_EXECUTION_TIME_MS, Long.parseLong(entry.getValue()));
           break;
         case TRACE_INFO:
           LOGGER.debug("Skipping trace info: {}", entry.getValue());
@@ -374,11 +425,28 @@ public class LeafOperator extends MultiStageOperator {
         case NUM_CONSUMING_SEGMENTS_MATCHED:
           _statMap.merge(StatKey.NUM_CONSUMING_SEGMENTS_MATCHED, Integer.parseInt(entry.getValue()));
           break;
+        case EARLY_TERMINATION_REASON:
+          mergeEarlyTerminationReason(entry.getValue());
+          break;
         case SORTED:
           break;
         default:
           throw new IllegalArgumentException("Unhandled leaf execution stat: " + key);
       }
+    }
+  }
+
+  private void mergeEarlyTerminationReason(@Nullable String earlyTerminationReason) {
+    if (earlyTerminationReason == null || earlyTerminationReason.isEmpty()) {
+      return;
+    }
+    try {
+      EarlyTerminationReason reason = EarlyTerminationReason.valueOf(earlyTerminationReason);
+      if (reason != EarlyTerminationReason.NONE) {
+        _statMap.merge(StatKey.EARLY_TERMINATION_REASONS, Set.of(reason.name()));
+      }
+    } catch (IllegalArgumentException e) {
+      LOGGER.debug("Skipping unknown early termination reason: {}", earlyTerminationReason);
     }
   }
 
@@ -403,11 +471,11 @@ public class LeafOperator extends MultiStageOperator {
   }
 
   private Future<?> startExecution() {
-    ThreadExecutionContext parentContext = Tracing.getThreadAccountant().getThreadExecutionContext();
     return _executorService.submit(() -> {
       try {
-        execute(parentContext);
+        execute();
       } catch (Exception e) {
+        LOGGER.error("Caught exception while executing leaf stage", e);
         setErrorBlock(
             ErrorMseBlock.fromError(QueryErrorCode.INTERNAL, "Caught exception while executing leaf stage: " + e));
       } finally {
@@ -425,20 +493,9 @@ public class LeafOperator extends MultiStageOperator {
   }
 
   @VisibleForTesting
-  void execute(@Nullable ThreadExecutionContext parentContext) {
+  void execute() {
     if (_requests.size() == 1) {
-      ServerQueryRequest request = _requests.get(0);
-      if (parentContext != null) {
-        // NOTE: Treat this as SSE runner (anchor) thread.
-        Tracing.ThreadAccountantOps.setupRunner(parentContext.getQueryId(), parentContext.getWorkloadName());
-        try {
-          executeOneRequest(request, null);
-        } finally {
-          Tracing.ThreadAccountantOps.clear();
-        }
-      } else {
-        executeOneRequest(request, null);
-      }
+      executeOneRequest(_requests.get(0), null);
     } else {
       // Hit 2 physical tables, one REALTIME and one OFFLINE
       assert _requests.size() == 2;
@@ -450,23 +507,14 @@ public class LeafOperator extends MultiStageOperator {
       for (int i = 0; i < 2; i++) {
         ServerQueryRequest request = _requests.get(i);
         futures[i] = _executorService.submit(() -> {
-          if (parentContext != null) {
-            // NOTE: Treat this as SSE runner (anchor) thread.
-            Tracing.ThreadAccountantOps.setupRunner(parentContext.getQueryId(), parentContext.getWorkloadName());
-            try {
-              // Drain the latch when receiving exception block and not wait for the other thread to finish
-              executeOneRequest(request, latch::countDown);
-            } finally {
-              Tracing.ThreadAccountantOps.clear();
-              latch.countDown();
-            }
-          } else {
-            try {
-              // Drain the latch when receiving exception block and not wait for the other thread to finish
-              executeOneRequest(request, latch::countDown);
-            } finally {
-              latch.countDown();
-            }
+          try {
+            // Drain the latch when receiving exception block and not wait for the other thread to finish
+            executeOneRequest(request, latch::countDown);
+          } catch (Throwable t) {
+            // TODO: We need to propagate this error back
+            LOGGER.error("Caught exception while executing leaf stage on hybrid table", t);
+          } finally {
+            latch.countDown();
           }
         });
       }
@@ -538,10 +586,8 @@ public class LeafOperator extends MultiStageOperator {
     _blockingQueue.clear();
   }
 
-  /**
-   * Composes the {@link MseBlock} from the {@link BaseResultsBlock} returned from single-stage engine. It
-   * converts the data types of the results to conform with the desired data schema asked by the multi-stage engine.
-   */
+  /// Composes the [MseBlock] from the [BaseResultsBlock] returned from single-stage engine. It
+  /// converts the data types of the results to conform with the desired data schema asked by the multi-stage engine.
   private RowHeapDataBlock composeMseBlock(BaseResultsBlock resultsBlock) {
     if (resultsBlock instanceof SelectionResultsBlock) {
       return composeSelectMseBlock((SelectionResultsBlock) resultsBlock);
@@ -550,9 +596,7 @@ public class LeafOperator extends MultiStageOperator {
     }
   }
 
-  /**
-   * For selection, we need to check if the columns are in order. If not, we need to re-arrange the columns.
-   */
+  /// For selection, we need to check if the columns are in order. If not, we need to re-arrange the columns.
   private RowHeapDataBlock composeSelectMseBlock(SelectionResultsBlock resultsBlock) {
     int[] columnIndices = getColumnIndices(resultsBlock);
     if (!inOrder(columnIndices)) {
@@ -705,6 +749,7 @@ public class LeafOperator extends MultiStageOperator {
     GROUPS_TRIMMED(StatMap.Type.BOOLEAN),
     NUM_GROUPS_LIMIT_REACHED(StatMap.Type.BOOLEAN),
     NUM_GROUPS_WARNING_LIMIT_REACHED(StatMap.Type.BOOLEAN),
+    LITE_MODE_LEAF_STAGE_LIMIT_REACHED(StatMap.Type.BOOLEAN),
     NUM_RESIZES(StatMap.Type.INT, null),
     RESIZE_TIME_MS(StatMap.Type.LONG, null),
     THREAD_CPU_TIME_NS(StatMap.Type.LONG, null),
@@ -717,14 +762,13 @@ public class LeafOperator extends MultiStageOperator {
         return "responseSerializationCpuTimeNs";
       }
     },
-    /**
-     * Allocated memory in bytes for this operator or its children in the same stage.
-     */
+    /// Allocated memory in bytes for this operator or its children in the same stage.
     ALLOCATED_MEMORY_BYTES(StatMap.Type.LONG, null),
-    /**
-     * Time spent on GC while this operator or its children in the same stage were running.
-     */
-    GC_TIME_MS(StatMap.Type.LONG, null);
+    /// Time spent on GC while this operator or its children in the same stage were running.
+    GC_TIME_MS(StatMap.Type.LONG, null),
+    /// Time spent in single-stage execution engine for this leaf stage.
+    SSE_EXECUTION_TIME_MS(StatMap.Type.LONG, null),
+    EARLY_TERMINATION_REASONS(StatMap.Type.STRING_SET);
     // IMPORTANT: When adding new StatKeys, make sure to either create the same key in BrokerResponseNativeV2.StatKey or
     //  call the constructor that accepts a String as last argument and set it to null.
     //  Otherwise the constructor will fail with an IllegalArgumentException which will not be caught and will
@@ -772,6 +816,9 @@ public class LeafOperator extends MultiStageOperator {
             break;
           case STRING:
             oldMetadata.merge(_brokerKey, stats.getString(this));
+            break;
+          case STRING_SET:
+            oldMetadata.merge(_brokerKey, stats.getStringSet(this));
             break;
           default:
             throw new IllegalStateException("Unsupported type: " + _type);

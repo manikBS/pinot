@@ -19,11 +19,9 @@
 package org.apache.pinot.tools;
 
 import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableMap;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -37,7 +35,7 @@ import org.apache.pinot.tools.admin.command.QuickstartRunner;
 public class HybridQuickstart extends Quickstart {
   @Override
   public List<String> types() {
-    return Collections.singletonList("HYBRID");
+    return List.of("HYBRID");
   }
 
   public static void main(String[] args)
@@ -101,7 +99,7 @@ public class HybridQuickstart extends Quickstart {
 
   @Override
   protected Map<String, String> getDefaultStreamTableDirectories() {
-    return ImmutableMap.of("airlineStats", "examples/stream/airlineStats");
+    return Map.of("airlineStats", "examples/stream/airlineStats");
   }
 
   public void execute()

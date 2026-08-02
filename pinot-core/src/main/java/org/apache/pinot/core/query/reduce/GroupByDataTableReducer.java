@@ -23,32 +23,33 @@ import it.unimi.dsi.fastutil.floats.FloatArrayList;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
+import java.io.IOException;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.pinot.common.CustomObject;
 import org.apache.pinot.common.Utils;
 import org.apache.pinot.common.datatable.DataTable;
+import org.apache.pinot.common.datatable.DataTable.MetadataKey;
 import org.apache.pinot.common.metrics.BrokerGauge;
 import org.apache.pinot.common.metrics.BrokerMeter;
 import org.apache.pinot.common.metrics.BrokerMetrics;
 import org.apache.pinot.common.request.context.ExpressionContext;
 import org.apache.pinot.common.request.context.FilterContext;
 import org.apache.pinot.common.response.broker.BrokerResponseNative;
-import org.apache.pinot.common.response.broker.QueryProcessingException;
 import org.apache.pinot.common.response.broker.ResultTable;
 import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.common.utils.DataSchema.ColumnDataType;
+import org.apache.pinot.core.common.datatable.DataTableBuilder;
+import org.apache.pinot.core.common.datatable.DataTableBuilderFactory;
+import org.apache.pinot.core.common.datatable.DataTableBuilderUtils;
 import org.apache.pinot.core.data.table.IndexedTable;
 import org.apache.pinot.core.data.table.Record;
 import org.apache.pinot.core.query.aggregation.function.AggregationFunction;
@@ -59,18 +60,14 @@ import org.apache.pinot.core.query.utils.rewriter.RewriterResult;
 import org.apache.pinot.core.transport.ServerRoutingInstance;
 import org.apache.pinot.core.util.GroupByUtils;
 import org.apache.pinot.core.util.trace.TraceRunnable;
-import org.apache.pinot.spi.accounting.ThreadExecutionContext;
-import org.apache.pinot.spi.accounting.ThreadResourceUsageAccountant;
 import org.apache.pinot.spi.exception.EarlyTerminationException;
 import org.apache.pinot.spi.exception.QueryErrorCode;
-import org.apache.pinot.spi.trace.Tracing;
+import org.apache.pinot.spi.query.QueryThreadContext;
 import org.roaringbitmap.RoaringBitmap;
 
 
-/**
- * Helper class to reduce data tables and set group by results into the BrokerResponseNative
- * Used for key-less aggregations, e.g. select max(id), sum(quantity) from orders .
- */
+/// Helper class to reduce data tables and set group by results into the BrokerResponseNative
+/// Used for key-less aggregations, e.g. select max(id), sum(quantity) from orders .
 @SuppressWarnings("rawtypes")
 public class GroupByDataTableReducer implements DataTableReducer {
   private static final int MIN_DATA_TABLES_FOR_CONCURRENT_REDUCE = 2; // TBD, find a better value.
@@ -78,25 +75,23 @@ public class GroupByDataTableReducer implements DataTableReducer {
   private final QueryContext _queryContext;
   private final AggregationFunction[] _aggregationFunctions;
   private final int _numAggregationFunctions;
-  private final int _numGroupByExpressions;
+  /// Number of key columns: union group-by columns plus the synthetic $groupingId column for grouping sets.
+  /// Key columns precede the aggregation columns in the merged row layout.
+  private final int _numKeyColumns;
   private final int _numColumns;
-  private final ThreadResourceUsageAccountant _resourceUsageAccountant;
 
-  public GroupByDataTableReducer(QueryContext queryContext, ThreadResourceUsageAccountant accountant) {
+  public GroupByDataTableReducer(QueryContext queryContext) {
     _queryContext = queryContext;
     _aggregationFunctions = queryContext.getAggregationFunctions();
     assert _aggregationFunctions != null;
     _numAggregationFunctions = _aggregationFunctions.length;
     List<ExpressionContext> groupByExpressions = queryContext.getGroupByExpressions();
     assert groupByExpressions != null;
-    _numGroupByExpressions = groupByExpressions.size();
-    _numColumns = _numAggregationFunctions + _numGroupByExpressions;
-    _resourceUsageAccountant = accountant;
+    _numKeyColumns = queryContext.getNumGroupByKeyColumns();
+    _numColumns = _numAggregationFunctions + _numKeyColumns;
   }
 
-  /**
-   * Reduces and sets group by results into ResultTable.
-   */
+  /// Reduces and sets group by results into ResultTable.
   @Override
   public void reduceAndSetResults(String tableName, DataSchema dataSchema,
       Map<ServerRoutingInstance, DataTable> dataTableMap, BrokerResponseNative brokerResponse,
@@ -107,7 +102,7 @@ public class GroupByDataTableReducer implements DataTableReducer {
       PostAggregationHandler postAggregationHandler =
           new PostAggregationHandler(_queryContext, getPrePostAggregationDataSchema(dataSchema));
       DataSchema resultDataSchema = postAggregationHandler.getResultDataSchema();
-      RewriterResult rewriterResult = ResultRewriteUtils.rewriteResult(resultDataSchema, Collections.emptyList());
+      RewriterResult rewriterResult = ResultRewriteUtils.rewriteResult(resultDataSchema, List.of());
       brokerResponse.setResultTable(new ResultTable(rewriterResult.getDataSchema(), rewriterResult.getRows()));
       return;
     }
@@ -118,12 +113,7 @@ public class GroupByDataTableReducer implements DataTableReducer {
     if (_queryContext.isServerReturnFinalResult() && dataTables.size() == 1) {
       processSingleFinalResult(dataSchema, dataTables.iterator().next(), brokerResponse);
     } else {
-      try {
-        reduceResult(brokerResponse, dataSchema, dataTables, reducerContext, tableName, brokerMetrics);
-      } catch (TimeoutException e) {
-        brokerResponse.getExceptions()
-            .add(new QueryProcessingException(QueryErrorCode.BROKER_TIMEOUT, e.getMessage()));
-      }
+      reduceResult(brokerResponse, dataSchema, dataTables, reducerContext, tableName, brokerMetrics);
     }
 
     if (brokerMetrics != null && brokerResponse.getResultTable() != null) {
@@ -132,22 +122,61 @@ public class GroupByDataTableReducer implements DataTableReducer {
     }
   }
 
-  /**
-   * Extract group by order by results and set into {@link ResultTable}
-   * @param brokerResponseNative broker response
-   * @param dataSchema data schema
-   * @param dataTables Collection of data tables
-   * @param reducerContext DataTableReducer context
-   * @param rawTableName table name
-   * @param brokerMetrics broker metrics (meters)
-   * @throws TimeoutException If unable complete within timeout.
-   */
+  @Override
+  public DataTable mergeDataTablesOnly(String tableName, DataSchema dataSchema,
+      Map<ServerRoutingInstance, DataTable> dataTableMap, DataTableReducerContext reducerContext,
+      BrokerMetrics brokerMetrics) {
+    // When servers are configured to return final aggregate state, the input DataTables hold final
+    // (not intermediate) values, so the merge-only contract — "produce an intermediate DataTable that
+    // can be re-merged via the normal reduce path" — cannot be honored.
+    if (_queryContext.isServerReturnFinalResult() || _queryContext.isServerReturnFinalResultKeyUnpartitioned()) {
+      throw new UnsupportedOperationException(
+          "Merge-only reduction is not supported when servers return final aggregate results "
+              + "(serverReturnFinalResult / serverReturnFinalResultKeyUnpartitioned); input would be "
+              + "final-typed, not intermediate.");
+    }
+    dataSchema = ReducerDataSchemaUtils.canonicalizeDataSchemaForGroupBy(_queryContext, dataSchema);
+    try {
+      if (dataTableMap.isEmpty()) {
+        return DataTableBuilderFactory.getDataTableBuilder(dataSchema).build();
+      }
+      Collection<DataTable> dataTables = dataTableMap.values();
+      // Reuse the regular reduce's merge: builds the IndexedTable of group keys + intermediate agg state.
+      IndexedTable indexedTable = getIndexedTable(dataSchema, dataTables, reducerContext);
+      // Keep aggregate values as intermediates so the output can be re-merged through the regular reduce path.
+      indexedTable.finish(false, false);
+      DataTable mergedDataTable = buildIntermediateDataTable(dataSchema, indexedTable);
+      if (indexedTable.isTrimmed() && _queryContext.isUnsafeTrim()) {
+        mergedDataTable.getMetadata().put(MetadataKey.GROUPS_TRIMMED.getName(), "true");
+      }
+      if (anyNumGroupsLimitReached(dataTables)) {
+        mergedDataTable.getMetadata().put(MetadataKey.NUM_GROUPS_LIMIT_REACHED.getName(), "true");
+      }
+      return mergedDataTable;
+    } catch (IOException e) {
+      throw new RuntimeException("Caught IOException while building merged intermediate DataTable for group-by", e);
+    }
+  }
+
+  private static boolean anyNumGroupsLimitReached(Collection<DataTable> dataTables) {
+    for (DataTable dataTable : dataTables) {
+      if (Boolean.parseBoolean(dataTable.getMetadata().get(MetadataKey.NUM_GROUPS_LIMIT_REACHED.getName()))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Reduces group-by results into a [ResultTable] and set it into the [BrokerResponseNative].
   private void reduceResult(BrokerResponseNative brokerResponseNative, DataSchema dataSchema,
       Collection<DataTable> dataTables, DataTableReducerContext reducerContext, String rawTableName,
-      BrokerMetrics brokerMetrics)
-      throws TimeoutException {
+      BrokerMetrics brokerMetrics) {
     // NOTE: This step will modify the data schema and also return final aggregate results.
     IndexedTable indexedTable = getIndexedTable(dataSchema, dataTables, reducerContext);
+    // Sort + finalize: mutate _dataSchema column types to final-result types and replace each row's value
+    // with extractFinalResult(...). Required by the regular reduce path: the downstream consumers
+    // (PostAggregationHandler, HavingFilterHandler, ResultTable serialization) expect final scalars.
+    indexedTable.finish(true, true);
     if (indexedTable.isTrimmed() && _queryContext.isUnsafeTrim()) {
       brokerResponseNative.setGroupsTrimmed(true);
     }
@@ -165,7 +194,7 @@ public class GroupByDataTableReducer implements DataTableReducer {
     // Directly return when there is no record returned, or limit is 0
     int limit = _queryContext.getLimit();
     if (numRecords == 0 || limit == 0) {
-      brokerResponseNative.setResultTable(new ResultTable(resultDataSchema, Collections.emptyList()));
+      brokerResponseNative.setResultTable(new ResultTable(resultDataSchema, List.of()));
       return;
     }
 
@@ -176,36 +205,35 @@ public class GroupByDataTableReducer implements DataTableReducer {
     FilterContext havingFilter = _queryContext.getHavingFilter();
     if (havingFilter != null) {
       rows = new ArrayList<>();
-      HavingFilterHandler havingFilterHandler =
-          new HavingFilterHandler(havingFilter, postAggregationHandler, _queryContext.isNullHandlingEnabled());
+      HavingFilterHandler havingFilterHandler = new HavingFilterHandler(havingFilter, postAggregationHandler,
+          _queryContext.requiresNullAwareKeySerialization());
       int processedRows = 0;
       while (rows.size() < limit && sortedIterator.hasNext()) {
+        QueryThreadContext.checkTerminationAndSampleUsagePeriodically(processedRows++, "GroupByDataTableReducer");
         Object[] row = sortedIterator.next().getValues();
         for (int i = 0; i < numColumns; i++) {
           Object value = row[i];
           if (value != null) {
-            row[i] = columnDataTypes[i].convert(row[i]);
+            row[i] = columnDataTypes[i].convert(value);
           }
         }
         if (havingFilterHandler.isMatch(row)) {
           rows.add(row);
         }
-        Tracing.ThreadAccountantOps.sampleAndCheckInterruptionPeriodically(processedRows);
-        processedRows++;
       }
     } else {
       int numRows = Math.min(numRecords, limit);
       rows = new ArrayList<>(numRows);
       for (int i = 0; i < numRows; i++) {
+        QueryThreadContext.checkTerminationAndSampleUsagePeriodically(i, "GroupByDataTableReducer");
         Object[] row = sortedIterator.next().getValues();
         for (int j = 0; j < numColumns; j++) {
           Object value = row[j];
           if (value != null) {
-            row[j] = columnDataTypes[j].convert(row[j]);
+            row[j] = columnDataTypes[j].convert(value);
           }
         }
         rows.add(row);
-        Tracing.ThreadAccountantOps.sampleAndCheckInterruptionPeriodically(i);
       }
     }
 
@@ -217,22 +245,19 @@ public class GroupByDataTableReducer implements DataTableReducer {
     brokerResponseNative.setResultTable(new ResultTable(rewriterResult.getDataSchema(), rewriterResult.getRows()));
   }
 
-  /**
-   * Constructs the DataSchema for the rows before the post-aggregation (SQL mode).
-   */
+  /// Constructs the DataSchema for the rows before the post-aggregation (SQL mode).
   private DataSchema getPrePostAggregationDataSchema(DataSchema dataSchema) {
     String[] columnNames = dataSchema.getColumnNames();
     ColumnDataType[] columnDataTypes = new ColumnDataType[_numColumns];
-    System.arraycopy(dataSchema.getColumnDataTypes(), 0, columnDataTypes, 0, _numGroupByExpressions);
+    System.arraycopy(dataSchema.getColumnDataTypes(), 0, columnDataTypes, 0, _numKeyColumns);
     for (int i = 0; i < _numAggregationFunctions; i++) {
-      columnDataTypes[i + _numGroupByExpressions] = _aggregationFunctions[i].getFinalResultColumnType();
+      columnDataTypes[i + _numKeyColumns] = _aggregationFunctions[i].getFinalResultColumnType();
     }
     return new DataSchema(columnNames, columnDataTypes);
   }
 
   private IndexedTable getIndexedTable(DataSchema dataSchema, Collection<DataTable> dataTablesToReduce,
-      DataTableReducerContext reducerContext)
-      throws TimeoutException {
+      DataTableReducerContext reducerContext) {
     long start = System.currentTimeMillis();
 
     assert !dataTablesToReduce.isEmpty();
@@ -263,17 +288,16 @@ public class GroupByDataTableReducer implements DataTableReducer {
     ColumnDataType[] storedColumnDataTypes = dataSchema.getStoredColumnDataTypes();
     for (int i = 0; i < numReduceThreadsToUse; i++) {
       List<DataTable> reduceGroup = reduceGroups.get(i);
-      int taskId = i;
-      ThreadExecutionContext parentContext = Tracing.getThreadAccountant().getThreadExecutionContext();
       futures[i] = reducerContext.getExecutorService().submit(new TraceRunnable() {
         @Override
         public void runJob() {
-          _resourceUsageAccountant.setupWorker(taskId, ThreadExecutionContext.TaskType.SSE, parentContext);
           try {
             for (DataTable dataTable : reduceGroup) {
-              boolean nullHandlingEnabled = _queryContext.isNullHandlingEnabled();
+              /// Grouping-set queries serialize NULL group keys via null bitmaps regardless of the user's
+              /// null-handling option, so their key nulls must be restored here as well.
+              boolean restoreNulls = _queryContext.requiresNullAwareKeySerialization();
               RoaringBitmap[] nullBitmaps = null;
-              if (nullHandlingEnabled) {
+              if (restoreNulls) {
                 nullBitmaps = new RoaringBitmap[_numColumns];
                 for (int i = 0; i < _numColumns; i++) {
                   nullBitmaps[i] = dataTable.getNullRowIds(i);
@@ -285,7 +309,7 @@ public class GroupByDataTableReducer implements DataTableReducer {
                 // Terminate when thread is interrupted.
                 // This is expected when the query already fails in the main thread.
                 // The first check will always be performed when rowId = 0
-                Tracing.ThreadAccountantOps.sampleAndCheckInterruptionPeriodically(rowId);
+                QueryThreadContext.checkTerminationAndSampleUsagePeriodically(rowId, "GroupByDataTableReducer");
                 Object[] values = new Object[_numColumns];
                 for (int colId = 0; colId < _numColumns; colId++) {
                   // NOTE: We need to handle data types for group key, intermediate and final aggregate result.
@@ -323,15 +347,21 @@ public class GroupByDataTableReducer implements DataTableReducer {
                     case DOUBLE_ARRAY:
                       values[colId] = DoubleArrayList.wrap(dataTable.getDoubleArray(rowId, colId));
                       break;
+                    case BIG_DECIMAL_ARRAY:
+                      values[colId] = ObjectArrayList.wrap(dataTable.getBigDecimalArray(rowId, colId));
+                      break;
                     case STRING_ARRAY:
                       values[colId] = ObjectArrayList.wrap(dataTable.getStringArray(rowId, colId));
+                      break;
+                    case BYTES_ARRAY:
+                      values[colId] = ObjectArrayList.wrap(dataTable.getBytesArray(rowId, colId));
                       break;
                     case OBJECT:
                       CustomObject customObject = dataTable.getCustomObject(rowId, colId);
                       if (customObject != null) {
                         assert _aggregationFunctions != null;
                         values[colId] =
-                            _aggregationFunctions[colId - _numGroupByExpressions].deserializeIntermediateResult(
+                            _aggregationFunctions[colId - _numKeyColumns].deserializeIntermediateResult(
                                 customObject);
                       }
                       break;
@@ -340,7 +370,7 @@ public class GroupByDataTableReducer implements DataTableReducer {
                       throw new IllegalStateException();
                   }
                 }
-                if (nullHandlingEnabled) {
+                if (restoreNulls) {
                   for (int colId = 0; colId < _numColumns; colId++) {
                     if (nullBitmaps[colId] != null && nullBitmaps[colId].contains(rowId)) {
                       values[colId] = null;
@@ -354,7 +384,6 @@ public class GroupByDataTableReducer implements DataTableReducer {
             exception.compareAndSet(null, t);
           } finally {
             countDownLatch.countDown();
-            Tracing.ThreadAccountantOps.clear();
           }
         }
       });
@@ -363,17 +392,14 @@ public class GroupByDataTableReducer implements DataTableReducer {
     try {
       long timeOutMs = reducerContext.getReduceTimeOutMs() - (System.currentTimeMillis() - start);
       if (!countDownLatch.await(timeOutMs, TimeUnit.MILLISECONDS)) {
-        throw new TimeoutException("Timed out on broker reduce phase");
+        throw QueryErrorCode.BROKER_TIMEOUT.asException("Timed out reducing group-by results");
       }
       Throwable t = exception.get();
       if (t != null) {
         Utils.rethrowException(t);
       }
     } catch (InterruptedException e) {
-      Exception killedErrorMsg = Tracing.getThreadAccountant().getErrorStatus();
-      throw new EarlyTerminationException(
-          "Interrupted in broker reduce phase" + (killedErrorMsg == null ? StringUtils.EMPTY : " " + killedErrorMsg),
-          e);
+      throw new EarlyTerminationException("Interrupted while reducing group-by results");
     } finally {
       for (Future future : futures) {
         if (!future.isDone()) {
@@ -382,22 +408,24 @@ public class GroupByDataTableReducer implements DataTableReducer {
       }
     }
 
-    indexedTable.finish(true, true);
+    // NOTE: finish(...) is invoked by the caller, not here. The two callers want different semantics:
+    //   - reduceResult (regular reduce → ResultTable) needs finish(true, true) to extract final results.
+    //   - mergeDataTablesOnly (merge-only intermediate output) needs finish(true, false) so the aggregate
+    //     values stay as intermediates (e.g. Set for DISTINCTCOUNT, not Integer); otherwise the next
+    //     buildIntermediateDataTable's serializeIntermediateResult(...) call casts the final scalar back to
+    //     the intermediate type and throws ClassCastException.
     return indexedTable;
   }
 
-  /**
-   * Computes the number of reduce threads to use per query.
-   * <ul>
-   *   <li> Use single thread if number of data tables to reduce is less than
-   *   {@value #MIN_DATA_TABLES_FOR_CONCURRENT_REDUCE}.</li>
-   *   <li> Else, use min of max allowed reduce threads per query, and number of data tables.</li>
-   * </ul>
-   *
-   * @param numDataTables Number of data tables to reduce
-   * @param maxReduceThreadsPerQuery Max allowed reduce threads per query
-   * @return Number of reduce threads to use for the query
-   */
+  /// Computes the number of reduce threads to use per query.
+  ///
+  /// - Use single thread if number of data tables to reduce is less than
+  ///   {@value #MIN_DATA_TABLES_FOR_CONCURRENT_REDUCE}.
+  /// - Else, use min of max allowed reduce threads per query, and number of data tables.
+  ///
+  /// @param numDataTables Number of data tables to reduce
+  /// @param maxReduceThreadsPerQuery Max allowed reduce threads per query
+  /// @return Number of reduce threads to use for the query
   private int getNumReduceThreadsToUse(int numDataTables, int maxReduceThreadsPerQuery) {
     // Use single thread if number of data tables < MIN_DATA_TABLES_FOR_CONCURRENT_REDUCE.
     if (numDataTables < MIN_DATA_TABLES_FOR_CONCURRENT_REDUCE) {
@@ -416,7 +444,7 @@ public class GroupByDataTableReducer implements DataTableReducer {
     int numRows = dataTable.getNumberOfRows();
     int limit = _queryContext.getLimit();
     if (numRows == 0 || limit == 0) {
-      brokerResponseNative.setResultTable(new ResultTable(resultDataSchema, Collections.emptyList()));
+      brokerResponseNative.setResultTable(new ResultTable(resultDataSchema, List.of()));
       return;
     }
 
@@ -425,8 +453,8 @@ public class GroupByDataTableReducer implements DataTableReducer {
     FilterContext havingFilter = _queryContext.getHavingFilter();
     if (havingFilter != null) {
       rows = new ArrayList<>();
-      HavingFilterHandler havingFilterHandler =
-          new HavingFilterHandler(havingFilter, postAggregationHandler, _queryContext.isNullHandlingEnabled());
+      HavingFilterHandler havingFilterHandler = new HavingFilterHandler(havingFilter, postAggregationHandler,
+          _queryContext.requiresNullAwareKeySerialization());
       for (int i = 0; i < numRows; i++) {
         Object[] row = getConvertedRowWithFinalResult(dataTable, i);
         if (havingFilterHandler.isMatch(row)) {
@@ -473,7 +501,7 @@ public class GroupByDataTableReducer implements DataTableReducer {
     Object[] row = new Object[_numColumns];
     ColumnDataType[] columnDataTypes = dataTable.getDataSchema().getColumnDataTypes();
     for (int i = 0; i < _numColumns; i++) {
-      if (i < _numGroupByExpressions) {
+      if (i < _numKeyColumns) {
         row[i] = getConvertedKey(dataTable, columnDataTypes[i], rowId, i);
       } else {
         row[i] = AggregationFunctionUtils.getConvertedFinalResult(dataTable, columnDataTypes[i], rowId, i);
@@ -506,5 +534,77 @@ public class GroupByDataTableReducer implements DataTableReducer {
       default:
         throw new IllegalStateException("Illegal column data type in group key: " + columnDataType);
     }
+  }
+
+  /// Serializes the merged [IndexedTable] back into an intermediate [DataTable], mirroring
+  /// `GroupByResultsBlock#getDataTable()` so the output is byte-shape identical to a single
+  /// server's intermediate group-by response. Group-key columns are written by stored type; OBJECT
+  /// aggregate columns via [AggregationFunction#serializeIntermediateResult]. No limit / HAVING /
+  /// post-aggregation / formatting is applied.
+  private DataTable buildIntermediateDataTable(DataSchema dataSchema, IndexedTable indexedTable)
+      throws IOException {
+    DataTableBuilder dataTableBuilder = DataTableBuilderFactory.getDataTableBuilder(dataSchema);
+    ColumnDataType[] storedColumnDataTypes = dataSchema.getStoredColumnDataTypes();
+    Iterator<Record> iterator = indexedTable.iterator();
+    /// Grouping-set queries carry NULL group keys that must be serialized via the null-aware path even when
+    /// the user did not enable null handling.
+    if (_queryContext.requiresNullAwareKeySerialization()) {
+      RoaringBitmap[] nullBitmaps = new RoaringBitmap[_numColumns];
+      Object[] nullPlaceholders = new Object[_numColumns];
+      for (int colId = 0; colId < _numColumns; colId++) {
+        nullBitmaps[colId] = new RoaringBitmap();
+        // Resolved on the logical type, not the stored type: UUID overrides getNullPlaceholder() to return the nil
+        // UUID, whereas its stored type BYTES would yield a zero-length placeholder that is not a valid UUID.
+        nullPlaceholders[colId] = dataSchema.getColumnDataType(colId).getNullPlaceholder();
+      }
+      int rowId = 0;
+      while (iterator.hasNext()) {
+        QueryThreadContext.checkTerminationAndSampleUsagePeriodically(rowId, "GroupByDataTableReducer#merge");
+        dataTableBuilder.startRow();
+        Object[] values = iterator.next().getValues();
+        for (int i = 0; i < _numColumns; i++) {
+          Object value = values[i];
+          if (storedColumnDataTypes[i] == ColumnDataType.OBJECT) {
+            if (value == null) {
+              dataTableBuilder.setNull(i);
+            } else {
+              dataTableBuilder.setColumn(i,
+                  _aggregationFunctions[i - _numKeyColumns].serializeIntermediateResult(value));
+            }
+          } else {
+            if (value == null) {
+              value = nullPlaceholders[i];
+              nullBitmaps[i].add(rowId);
+            }
+            DataTableBuilderUtils.setColumn(dataTableBuilder, storedColumnDataTypes[i], i, value);
+          }
+        }
+        dataTableBuilder.finishRow();
+        rowId++;
+      }
+      for (RoaringBitmap nullBitmap : nullBitmaps) {
+        dataTableBuilder.setNullRowIds(nullBitmap);
+      }
+    } else {
+      int rowId = 0;
+      while (iterator.hasNext()) {
+        QueryThreadContext.checkTerminationAndSampleUsagePeriodically(rowId++, "GroupByDataTableReducer#merge");
+        dataTableBuilder.startRow();
+        Object[] values = iterator.next().getValues();
+        for (int i = 0; i < _numColumns; i++) {
+          Object value = values[i];
+          if (value == null) {
+            dataTableBuilder.setNull(i);
+          } else if (storedColumnDataTypes[i] == ColumnDataType.OBJECT) {
+            dataTableBuilder.setColumn(i,
+                _aggregationFunctions[i - _numKeyColumns].serializeIntermediateResult(value));
+          } else {
+            DataTableBuilderUtils.setColumn(dataTableBuilder, storedColumnDataTypes[i], i, value);
+          }
+        }
+        dataTableBuilder.finishRow();
+      }
+    }
+    return dataTableBuilder.build();
   }
 }

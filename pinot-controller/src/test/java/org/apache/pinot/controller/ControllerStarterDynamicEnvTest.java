@@ -18,9 +18,9 @@
  */
 package org.apache.pinot.controller;
 
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import org.apache.helix.ConfigAccessor;
 import org.apache.helix.model.ClusterConfig;
 import org.apache.helix.model.HelixConfigScope;
@@ -31,7 +31,6 @@ import org.apache.pinot.controller.helix.ControllerTest;
 import org.apache.pinot.spi.env.PinotConfiguration;
 import org.apache.pinot.spi.utils.CommonConstants;
 import org.apache.pinot.spi.utils.NetUtils;
-import org.apache.pinot.spi.utils.builder.ControllerRequestURLBuilder;
 import org.testng.annotations.Test;
 
 import static org.apache.pinot.controller.ControllerConf.CONTROLLER_HOST;
@@ -41,9 +40,7 @@ import static org.apache.pinot.spi.utils.CommonConstants.Helix.CONTROLLER_INSTAN
 import static org.testng.Assert.*;
 
 
-/**
- * This class tests env variables when starting controller from configs
- */
+/// This class tests env variables when starting controller from configs
 public class ControllerStarterDynamicEnvTest extends ControllerTest {
   private final Map<String, Object> _configOverride = new HashMap<>();
 
@@ -70,7 +67,7 @@ public class ControllerStarterDynamicEnvTest extends ControllerTest {
     assertEquals(instanceConfig.getInstanceName(), instanceId);
     assertEquals(instanceConfig.getHostName(), "myHost");
     assertEquals(instanceConfig.getPort(), "1234");
-    assertEquals(instanceConfig.getTags(), Collections.singleton(CONTROLLER_INSTANCE));
+    assertEquals(instanceConfig.getTags(), Set.of(CONTROLLER_INSTANCE));
 
     stopController();
     stopZk();
@@ -94,7 +91,7 @@ public class ControllerStarterDynamicEnvTest extends ControllerTest {
     assertEquals(instanceConfig.getInstanceName(), instanceId);
     assertEquals(instanceConfig.getHostName(), "myHost");
     assertEquals(instanceConfig.getPort(), "1234");
-    assertEquals(instanceConfig.getTags(), Collections.singleton(CONTROLLER_INSTANCE));
+    assertEquals(instanceConfig.getTags(), Set.of(CONTROLLER_INSTANCE));
 
     stopController();
     stopZk();
@@ -118,7 +115,7 @@ public class ControllerStarterDynamicEnvTest extends ControllerTest {
     assertEquals(instanceConfig.getInstanceName(), instanceId);
     assertEquals(instanceConfig.getHostName(), "myHost");
     assertEquals(instanceConfig.getPort(), "1234");
-    assertEquals(instanceConfig.getTags(), Collections.singleton(CONTROLLER_INSTANCE));
+    assertEquals(instanceConfig.getTags(), Set.of(CONTROLLER_INSTANCE));
 
     stopController();
     stopZk();
@@ -159,7 +156,6 @@ public class ControllerStarterDynamicEnvTest extends ControllerTest {
     _controllerStarter.start();
     _controllerConfig = _controllerStarter.getConfig();
     _controllerBaseApiUrl = _controllerConfig.generateVipUrl();
-    _controllerRequestURLBuilder = ControllerRequestURLBuilder.baseUrl(_controllerBaseApiUrl);
     _controllerDataDir = _controllerConfig.getDataDir();
     _helixResourceManager = _controllerStarter.getHelixResourceManager();
     _helixManager = _controllerStarter.getHelixControllerManager();

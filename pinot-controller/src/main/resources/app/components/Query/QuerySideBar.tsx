@@ -27,7 +27,7 @@ import { TableData } from 'Models';
 import CustomizedTables from '../Table';
 import QueryIcon from '@material-ui/icons/QueryBuilder';
 import TimelineIcon from '@material-ui/icons/Timeline';
-import { useHistory, useLocation } from 'react-router';
+import { useHistory, useLocation } from 'react-router-dom';
 
 const drawerWidth = 300;
 
@@ -77,6 +77,7 @@ const useStyles = makeStyles((theme: Theme) =>
 
 type Props = {
   tableList: TableData;
+  logicalTableList?: TableData;
   fetchSQLData: Function;
   tableSchema: TableData;
   selectedTable: string;
@@ -84,7 +85,7 @@ type Props = {
   queryType?: 'sql' | 'timeseries';
 };
 
-const Sidebar = ({ tableList, fetchSQLData, tableSchema, selectedTable, queryLoader }: Props) => {
+const Sidebar = ({ tableList, logicalTableList, fetchSQLData, tableSchema, selectedTable, queryLoader }: Props) => {
   const classes = useStyles();
   const history = useHistory();
   const location = useLocation();
@@ -143,6 +144,17 @@ const Sidebar = ({ tableList, fetchSQLData, tableSchema, selectedTable, queryLoa
               showSearchBox={true}
               inAccordionFormat
             />
+
+            {logicalTableList && logicalTableList.records.length > 0 && isSqlQuery ? (
+              <CustomizedTables
+                title="Logical Tables"
+                data={logicalTableList}
+                cellClickCallback={fetchSQLData}
+                isCellClickable={isSqlQuery}
+                showSearchBox={true}
+                inAccordionFormat
+              />
+            ) : null}
 
             {!queryLoader && tableSchema.records.length && isSqlQuery ? (
               <CustomizedTables

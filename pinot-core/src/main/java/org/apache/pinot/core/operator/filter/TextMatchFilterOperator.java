@@ -19,7 +19,6 @@
 package org.apache.pinot.core.operator.filter;
 
 import com.google.common.base.CaseFormat;
-import java.util.Collections;
 import java.util.List;
 import org.apache.pinot.common.request.context.predicate.TextMatchPredicate;
 import org.apache.pinot.core.common.BlockDocIdSet;
@@ -34,26 +33,27 @@ import org.apache.pinot.spi.trace.Tracing;
 import org.roaringbitmap.buffer.ImmutableRoaringBitmap;
 
 
-/**
- * Filter operator for supporting the execution of text search
- * queries: WHERE TEXT_MATCH(column_name, query_string, options_string)
- */
+/// Filter operator for supporting the execution of text search
+/// queries: WHERE TEXT_MATCH(column_name, query_string, options_string)
 public class TextMatchFilterOperator extends BaseFilterOperator {
   private static final String EXPLAIN_NAME = "FILTER_TEXT_INDEX";
 
   // name of text column to query, used with multi-column text indexes.
   private final String _column;
   private final TextIndexReader _textIndexReader;
-  private final int _numDocs;
   private final TextMatchPredicate _predicate;
 
   public TextMatchFilterOperator(String column, TextIndexReader textIndexReader, TextMatchPredicate predicate,
       int numDocs) {
-    super(numDocs, false);
+    super(getSearchableDocCount(textIndexReader, numDocs), false);
     _column = column;
     _textIndexReader = textIndexReader;
     _predicate = predicate;
-    _numDocs = numDocs;
+  }
+
+  private static int getSearchableDocCount(TextIndexReader reader, int numDocs) {
+    int searchableDocCount = reader.getSearchableDocCount();
+    return searchableDocCount >= 0 && searchableDocCount < numDocs ? searchableDocCount : numDocs;
   }
 
   public TextMatchFilterOperator(TextIndexReader textIndexReader, TextMatchPredicate predicate, int numDocs) {
@@ -103,7 +103,7 @@ public class TextMatchFilterOperator extends BaseFilterOperator {
 
   @Override
   public List<Operator> getChildOperators() {
-    return Collections.emptyList();
+    return List.of();
   }
 
   @Override

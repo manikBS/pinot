@@ -20,7 +20,6 @@ package org.apache.pinot.integration.tests;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import org.apache.commons.io.FileUtils;
 import org.apache.helix.model.HelixConfigScope;
@@ -103,15 +102,13 @@ public abstract class ErrorCodesIntegrationTest extends BaseClusterIntegrationTe
 
   public abstract boolean useMultiStageQueryEngine();
 
-  /**
-   * If true, tests will query the controller instead of the broker.
-   */
+  /// If true, tests will query the controller instead of the broker.
   public abstract boolean queryController();
 
   @Override
   protected List<FieldConfig> getFieldConfigs() {
-    return Collections.singletonList(
-        new FieldConfig("DivAirports", FieldConfig.EncodingType.DICTIONARY, Collections.emptyList(),
+    return List.of(
+        new FieldConfig("DivAirports", FieldConfig.EncodingType.DICTIONARY, List.of(),
             FieldConfig.CompressionCodec.MV_ENTRY_DICT, null));
   }
 
@@ -139,14 +136,6 @@ public abstract class ErrorCodesIntegrationTest extends BaseClusterIntegrationTe
     // ArrTime expects a numeric type
     testQueryException("SELECT COUNT(*) FROM mytable where ArrTime = 'potato'",
         useMultiStageQueryEngine() ? QueryErrorCode.QUERY_PLANNING : QueryErrorCode.QUERY_VALIDATION);
-  }
-
-  @Test
-  public void testInvalidAggregationArg()
-      throws Exception {
-    // Cannot use numeric aggregate function for string column
-    testQueryException("SELECT MAX(OriginState) FROM mytable where ArrTime > 5",
-        QueryErrorCode.QUERY_VALIDATION);
   }
 
   private void testQueryException(@Language("sql") String query, QueryErrorCode errorCode)

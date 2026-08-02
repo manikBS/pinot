@@ -40,6 +40,7 @@ import org.apache.pinot.segment.local.segment.readers.GenericRowRecordReader;
 import org.apache.pinot.segment.spi.ColumnMetadata;
 import org.apache.pinot.segment.spi.creator.SegmentGeneratorConfig;
 import org.apache.pinot.segment.spi.index.metadata.SegmentMetadataImpl;
+import org.apache.pinot.spi.config.instance.InstanceType;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
 import org.apache.pinot.spi.data.FieldSpec;
@@ -85,6 +86,7 @@ public class MergeRollupTaskExecutorTest {
       String segmentName = MERGED_SEGMENT_NAME + i;
       RecordReader recordReader = new GenericRowRecordReader(rows);
       SegmentGeneratorConfig config = new SegmentGeneratorConfig(tableConfig, schema);
+      config.setInstanceType(InstanceType.MINION);
       config.setOutDir(ORIGINAL_SEGMENT_DIR.getPath());
       config.setTableName(TABLE_NAME);
       config.setSegmentName(segmentName);

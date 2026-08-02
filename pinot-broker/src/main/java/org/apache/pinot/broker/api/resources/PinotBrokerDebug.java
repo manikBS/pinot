@@ -47,7 +47,7 @@ import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import org.apache.pinot.broker.broker.AccessControlFactory;
 import org.apache.pinot.broker.queryquota.QueryQuotaManager;
-import org.apache.pinot.broker.routing.BrokerRoutingManager;
+import org.apache.pinot.broker.routing.manager.BrokerRoutingManager;
 import org.apache.pinot.common.request.BrokerRequest;
 import org.apache.pinot.common.utils.DatabaseUtils;
 import org.apache.pinot.core.auth.Actions;
@@ -61,10 +61,10 @@ import org.apache.pinot.core.transport.ServerInstance;
 import org.apache.pinot.core.transport.server.routing.stats.ServerRoutingStatsEntry;
 import org.apache.pinot.core.transport.server.routing.stats.ServerRoutingStatsManager;
 import org.apache.pinot.spi.accounting.QueryResourceTracker;
+import org.apache.pinot.spi.accounting.ThreadAccountant;
 import org.apache.pinot.spi.accounting.ThreadResourceTracker;
-import org.apache.pinot.spi.accounting.ThreadResourceUsageAccountant;
 import org.apache.pinot.spi.config.table.TableType;
-import org.apache.pinot.spi.trace.Tracing;
+import org.apache.pinot.spi.query.QueryExecutionContext.QueryType;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
 import org.apache.pinot.sql.parsers.CalciteSqlCompiler;
 
@@ -99,6 +99,9 @@ public class PinotBrokerDebug {
 
   @Inject
   AccessControlFactory _accessControlFactory;
+
+  @Inject
+  ThreadAccountant _threadAccountant;
 
   @GET
   @Produces(MediaType.APPLICATION_JSON)
@@ -173,11 +176,14 @@ public class PinotBrokerDebug {
   }
 
   private void getRoutingTable(String tableName, BiConsumer<String, RoutingTable> consumer) {
+    // Use a single requestId for both OFFLINE and REALTIME routing so that replica-group selection rotates properly
+    // for raw table names (no suffix) and stays consistent for hybrid tables.
+    long requestId = getRequestId();
     TableType tableType = TableNameBuilder.getTableTypeFromTableName(tableName);
     if (tableType != TableType.REALTIME) {
       String offlineTableName = TableNameBuilder.OFFLINE.tableNameWithType(tableName);
       RoutingTable routingTable = _routingManager.getRoutingTable(
-          CalciteSqlCompiler.compileToBrokerRequest("SELECT * FROM " + offlineTableName), getRequestId());
+          CalciteSqlCompiler.compileToBrokerRequest("SELECT * FROM " + offlineTableName), requestId);
       if (routingTable != null) {
         consumer.accept(offlineTableName, routingTable);
       }
@@ -185,7 +191,7 @@ public class PinotBrokerDebug {
     if (tableType != TableType.OFFLINE) {
       String realtimeTableName = TableNameBuilder.REALTIME.tableNameWithType(tableName);
       RoutingTable routingTable = _routingManager.getRoutingTable(
-          CalciteSqlCompiler.compileToBrokerRequest("SELECT * FROM " + realtimeTableName), getRequestId());
+          CalciteSqlCompiler.compileToBrokerRequest("SELECT * FROM " + realtimeTableName), requestId);
       if (routingTable != null) {
         consumer.accept(realtimeTableName, routingTable);
       }
@@ -258,10 +264,8 @@ public class PinotBrokerDebug {
     }
   }
 
-  /**
-   * API to get a snapshot of ServerRoutingStatsEntry for all the servers.
-   * @return String containing server name and the associated routing stats.
-   */
+  /// API to get a snapshot of ServerRoutingStatsEntry for all the servers.
+  /// @return String containing server name and the associated routing stats.
   @GET
   @Produces(MediaType.APPLICATION_JSON)
   @Path("/debug/serverRoutingStats")
@@ -272,9 +276,12 @@ public class PinotBrokerDebug {
       @ApiResponse(code = 404, message = "Server routing Stats not found"),
       @ApiResponse(code = 500, message = "Internal server error")
   })
-  public Map<String, ServerRoutingStatsEntry> getServerRoutingStats() {
+  public Map<String, ServerRoutingStatsEntry> getServerRoutingStats(
+      @ApiParam(value = "Query engine type (SSE or MSE)", allowableValues = "SSE, MSE")
+      @QueryParam("queryType") String queryTypeStr) {
     if (_serverRoutingStatsManager.isEnabled()) {
-      return _serverRoutingStatsManager.getServerRoutingStats();
+      QueryType queryType = queryTypeStr == null ? QueryType.SSE : QueryType.valueOf(queryTypeStr);
+      return _serverRoutingStatsManager.getServerRoutingStats(queryType);
     } else {
       throw new WebApplicationException("Server routing stats is not enabled", Response.Status.NOT_FOUND);
     }
@@ -290,8 +297,7 @@ public class PinotBrokerDebug {
   @Authorize(targetType = TargetType.CLUSTER, action = Actions.Cluster.DEBUG_RESOURCE_USAGE)
   @ApiOperation(value = "Get resource usage of threads")
   public Collection<? extends ThreadResourceTracker> getThreadResourceUsage() {
-    ThreadResourceUsageAccountant threadAccountant = Tracing.getThreadAccountant();
-    return threadAccountant.getThreadResources();
+    return _threadAccountant.getThreadResources();
   }
 
   @GET
@@ -301,8 +307,7 @@ public class PinotBrokerDebug {
   @ApiOperation(value = "Get current resource usage of queries in this service", notes = "This is a debug endpoint, "
       + "and won't maintain backward compatibility")
   public Collection<? extends QueryResourceTracker> getQueryUsage() {
-    ThreadResourceUsageAccountant threadAccountant = Tracing.getThreadAccountant();
-    return threadAccountant.getQueryResources().values();
+    return _threadAccountant.getQueryResources().values();
   }
 
   @GET

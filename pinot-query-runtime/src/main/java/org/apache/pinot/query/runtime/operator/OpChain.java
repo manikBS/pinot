@@ -19,17 +19,13 @@
 package org.apache.pinot.query.runtime.operator;
 
 import java.util.function.Consumer;
-import javax.annotation.Nullable;
 import org.apache.pinot.query.runtime.plan.OpChainExecutionContext;
-import org.apache.pinot.spi.accounting.ThreadExecutionContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/**
- * An {@code OpChain} represents a chain of operators that are separated
- * by send/receive stages.
- */
+/// An `OpChain` represents a chain of operators that are separated
+/// by send/receive stages.
 public class OpChain implements AutoCloseable {
   private static final Logger LOGGER = LoggerFactory.getLogger(OpChain.class);
 
@@ -37,7 +33,6 @@ public class OpChain implements AutoCloseable {
   private final OpChainExecutionContext _context;
   private final MultiStageOperator _root;
   private final Consumer<OpChainId> _finishCallback;
-  private final ThreadExecutionContext _parentContext;
 
   public OpChain(OpChainExecutionContext context, MultiStageOperator root) {
     this(context, root, (id) -> {
@@ -49,7 +44,6 @@ public class OpChain implements AutoCloseable {
     _id = context.getId();
     _root = root;
     _finishCallback = finishCallback;
-    _parentContext = context.getParentContext();
   }
 
   public OpChainExecutionContext getContext() {
@@ -64,22 +58,15 @@ public class OpChain implements AutoCloseable {
     return _root;
   }
 
-  @Nullable
-  public ThreadExecutionContext getParentContext() {
-    return _parentContext;
-  }
-
   @Override
   public String toString() {
     return "OpChain{" + _id + "}";
   }
 
-  /**
-   * close() is called when we finish execution successfully.
-   *
-   * Once the {@link OpChain} is being executed, this method should only be called from the thread that is actually
-   * executing it.
-   */
+  /// close() is called when we finish execution successfully.
+  ///
+  /// Once the [OpChain] is being executed, this method should only be called from the thread that is actually
+  /// executing it.
   @Override
   public void close() {
     try {
@@ -90,13 +77,11 @@ public class OpChain implements AutoCloseable {
     }
   }
 
-  /**
-   * cancel() is called when execution runs into error.
-   *
-   * Once the {@link OpChain} is being executed, this method should only be called from the thread that is actually
-   * executing it.
-   * @param e
-   */
+  /// cancel() is called when execution runs into error.
+  ///
+  /// Once the [OpChain] is being executed, this method should only be called from the thread that is actually
+  /// executing it.
+  /// @param e
   public void cancel(Throwable e) {
     try {
       _root.cancel(e);

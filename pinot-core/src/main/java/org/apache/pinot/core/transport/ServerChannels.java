@@ -18,6 +18,7 @@
  */
 package org.apache.pinot.core.transport;
 
+import com.google.common.annotations.VisibleForTesting;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.PooledByteBufAllocatorMetric;
@@ -49,6 +50,7 @@ import org.apache.pinot.common.metrics.BrokerMetrics;
 import org.apache.pinot.common.metrics.BrokerTimer;
 import org.apache.pinot.common.request.InstanceRequest;
 import org.apache.pinot.core.util.OsCheck;
+import org.apache.pinot.spi.accounting.ThreadAccountant;
 import org.apache.thrift.TSerializer;
 import org.apache.thrift.protocol.TCompactProtocol;
 import org.apache.thrift.transport.TTransportException;
@@ -56,35 +58,41 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/**
- * The {@code ServerChannels} class manages the channels between broker to all the connected servers.
- * <p>There is only one channel between the broker and each connected server (we count OFFLINE and REALTIME as different
- * servers)
- */
+/// The `ServerChannels` class manages the channels between broker to all the connected servers.
+///
+/// There is only one channel between the broker and each connected server (we count OFFLINE and REALTIME as different
+/// servers)
 @ThreadSafe
 public class ServerChannels {
   private static final Logger LOGGER = LoggerFactory.getLogger(ServerChannels.class);
   public static final String CHANNEL_LOCK_TIMEOUT_MSG = "Timeout while acquiring channel lock";
   private static final long TRY_CONNECT_CHANNEL_LOCK_TIMEOUT_MS = 5_000L;
 
-  private final QueryRouter _queryRouter;
-  private final BrokerMetrics _brokerMetrics;
   // TSerializer currently is not thread safe, must be put into a ThreadLocal.
-  private final ThreadLocal<TSerializer> _threadLocalTSerializer;
-  private final ConcurrentHashMap<ServerRoutingInstance, ServerChannel> _serverToChannelMap = new ConcurrentHashMap<>();
+  private static final ThreadLocal<TSerializer> THREAD_LOCAL_T_SERIALIZER = ThreadLocal.withInitial(() -> {
+    try {
+      return new TSerializer(new TCompactProtocol.Factory());
+    } catch (TTransportException e) {
+      throw new RuntimeException("Failed to initialize Thrift Serializer", e);
+    }
+  });
+
+  private final QueryRouter _queryRouter;
   private final TlsConfig _tlsConfig;
   private final EventLoopGroup _eventLoopGroup;
   private final Class<? extends SocketChannel> _channelClass;
+  private final ThreadAccountant _threadAccountant;
+  private final PooledByteBufAllocator _bufAllocatorWithLimits;
 
-  /**
-   * Create a server channel with TLS config
-   *
-   * @param queryRouter query router
-   * @param brokerMetrics broker metrics
-   * @param tlsConfig TLS/SSL config
-   */
-  public ServerChannels(QueryRouter queryRouter, BrokerMetrics brokerMetrics, @Nullable NettyConfig nettyConfig,
-      @Nullable TlsConfig tlsConfig) {
+  private final BrokerMetrics _brokerMetrics = BrokerMetrics.get();
+  private final ConcurrentHashMap<ServerRoutingInstance, ServerChannel> _serverToChannelMap = new ConcurrentHashMap<>();
+
+  /// Create a server channel with TLS config
+  ///
+  /// @param queryRouter query router
+  /// @param tlsConfig TLS/SSL config
+  public ServerChannels(QueryRouter queryRouter, @Nullable NettyConfig nettyConfig, @Nullable TlsConfig tlsConfig,
+      ThreadAccountant threadAccountant) {
     boolean enableNativeTransports = nettyConfig != null && nettyConfig.isNativeTransportsEnabled();
     OsCheck.OSType operatingSystemType = OsCheck.getOperatingSystemType();
     if (enableNativeTransports
@@ -114,21 +122,25 @@ public class ServerChannels {
     }
 
     _queryRouter = queryRouter;
-    _brokerMetrics = brokerMetrics;
     _tlsConfig = tlsConfig;
-    _threadLocalTSerializer = ThreadLocal.withInitial(() -> {
-      try {
-        return new TSerializer(new TCompactProtocol.Factory());
-      } catch (TTransportException e) {
-        throw new RuntimeException("Failed to initialize Thrift Serializer", e);
-      }
-    });
+    _threadAccountant = threadAccountant;
+
+    _bufAllocatorWithLimits = PooledByteBufAllocatorWithLimits.getSharedBufferAllocatorWithLimits();
+    PooledByteBufAllocatorMetric metric = _bufAllocatorWithLimits.metric();
+    _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_USED_DIRECT_MEMORY, metric::usedDirectMemory);
+    _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_USED_HEAP_MEMORY, metric::usedHeapMemory);
+    _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_ARENAS_DIRECT, metric::numDirectArenas);
+    _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_ARENAS_HEAP, metric::numHeapArenas);
+    _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_CACHE_SIZE_SMALL, metric::smallCacheSize);
+    _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_CACHE_SIZE_NORMAL, metric::normalCacheSize);
+    _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_THREADLOCALCACHE, metric::numThreadLocalCaches);
+    _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_CHUNK_SIZE, metric::chunkSize);
   }
 
   public void sendRequest(String rawTableName, AsyncQueryResponse asyncQueryResponse,
       ServerRoutingInstance serverRoutingInstance, InstanceRequest instanceRequest, long timeoutMs)
       throws Exception {
-    byte[] requestBytes = _threadLocalTSerializer.get().serialize(instanceRequest);
+    byte[] requestBytes = THREAD_LOCAL_T_SERIALIZER.get().serialize(instanceRequest);
     _serverToChannelMap.computeIfAbsent(serverRoutingInstance, ServerChannel::new)
         .sendRequest(rawTableName, asyncQueryResponse, serverRoutingInstance, requestBytes, timeoutMs);
   }
@@ -147,6 +159,11 @@ public class ServerChannels {
     _eventLoopGroup.shutdownGracefully(0, 0, TimeUnit.SECONDS);
   }
 
+  @VisibleForTesting
+  ServerChannel getOrCreateServerChannel(ServerRoutingInstance instance) {
+    return _serverToChannelMap.computeIfAbsent(instance, ServerChannel::new);
+  }
+
   @ThreadSafe
   class ServerChannel {
     final ServerRoutingInstance _serverRoutingInstance;
@@ -157,22 +174,8 @@ public class ServerChannels {
 
     ServerChannel(ServerRoutingInstance serverRoutingInstance) {
       _serverRoutingInstance = serverRoutingInstance;
-      PooledByteBufAllocator bufAllocator = PooledByteBufAllocator.DEFAULT;
-      PooledByteBufAllocatorMetric metric = bufAllocator.metric();
-      PooledByteBufAllocator bufAllocatorWithLimits =
-          PooledByteBufAllocatorWithLimits.getBufferAllocatorWithLimits(metric);
-      metric = bufAllocatorWithLimits.metric();
-      _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_USED_DIRECT_MEMORY, metric::usedDirectMemory);
-      _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_USED_HEAP_MEMORY, metric::usedHeapMemory);
-      _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_ARENAS_DIRECT, metric::numDirectArenas);
-      _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_ARENAS_HEAP, metric::numHeapArenas);
-      _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_CACHE_SIZE_SMALL, metric::smallCacheSize);
-      _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_CACHE_SIZE_NORMAL, metric::normalCacheSize);
-      _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_THREADLOCALCACHE, metric::numThreadLocalCaches);
-      _brokerMetrics.setOrUpdateGlobalGauge(BrokerGauge.NETTY_POOLED_CHUNK_SIZE, metric::chunkSize);
-
       _bootstrap = new Bootstrap().remoteAddress(serverRoutingInstance.getHostname(), serverRoutingInstance.getPort())
-          .option(ChannelOption.ALLOCATOR, bufAllocatorWithLimits).group(_eventLoopGroup).channel(_channelClass)
+          .option(ChannelOption.ALLOCATOR, _bufAllocatorWithLimits).group(_eventLoopGroup).channel(_channelClass)
           .option(ChannelOption.SO_KEEPALIVE, true).handler(new ChannelInitializer<SocketChannel>() {
             @Override
             protected void initChannel(SocketChannel ch) {
@@ -189,8 +192,9 @@ public class ServerChannels {
                       null, null));
               // NOTE: data table de-serialization happens inside this handler
               // Revisit if this becomes a bottleneck
-              ch.pipeline().addLast(
-                  ChannelHandlerFactory.getDataTableHandler(_queryRouter, _serverRoutingInstance, _brokerMetrics));
+              ch.pipeline()
+                  .addLast(ChannelHandlerFactory.getDataTableHandler(_queryRouter, _threadAccountant,
+                      _serverRoutingInstance));
             }
           });
     }
@@ -199,6 +203,11 @@ public class ServerChannels {
       if (_channel != null) {
         _channel.close();
       }
+    }
+
+    @VisibleForTesting
+    void setChannel(Channel channel) {
+      _channel = channel;
     }
 
     void setSilentShutdown() {
@@ -239,10 +248,18 @@ public class ServerChannels {
         ServerRoutingInstance serverRoutingInstance, byte[] requestBytes) {
       long startTimeMs = System.currentTimeMillis();
       _channel.writeAndFlush(Unpooled.wrappedBuffer(requestBytes)).addListener(f -> {
-        int requestSentLatencyMs = (int) (System.currentTimeMillis() - startTimeMs);
-        _brokerMetrics.addTimedTableValue(rawTableName, BrokerTimer.NETTY_CONNECTION_SEND_REQUEST_LATENCY,
-            requestSentLatencyMs, TimeUnit.MILLISECONDS);
-        asyncQueryResponse.markRequestSent(serverRoutingInstance, requestSentLatencyMs);
+        if (f.isSuccess()) {
+          int requestSentLatencyMs = (int) (System.currentTimeMillis() - startTimeMs);
+          _brokerMetrics.addTimedTableValue(rawTableName, BrokerTimer.NETTY_CONNECTION_SEND_REQUEST_LATENCY,
+              requestSentLatencyMs, TimeUnit.MILLISECONDS);
+          asyncQueryResponse.markRequestSent(serverRoutingInstance, requestSentLatencyMs);
+        } else {
+          LOGGER.error("Write failure to server: {} for table: {}", serverRoutingInstance, rawTableName, f.cause());
+          _brokerMetrics.addMeteredGlobalValue(BrokerMeter.NETTY_CONNECTION_SEND_REQUEST_FAILURES, 1);
+          asyncQueryResponse.markServerDown(serverRoutingInstance,
+              new RuntimeException("Failed to send request to server: " + serverRoutingInstance, f.cause()));
+          _channel.close();
+        }
       });
       _brokerMetrics.addMeteredGlobalValue(BrokerMeter.NETTY_CONNECTION_REQUESTS_SENT, 1);
       _brokerMetrics.addMeteredGlobalValue(BrokerMeter.NETTY_CONNECTION_BYTES_SENT, requestBytes.length);

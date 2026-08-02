@@ -33,129 +33,106 @@ import org.apache.pinot.spi.utils.MapUtils;
 import org.apache.pinot.spi.utils.hash.MurmurHashFunctions;
 
 
-/**
- * Interface for forward index reader.
- *
- * @param <T> Type of the ReaderContext
- */
+/// Interface for forward index reader.
+///
+/// @param <T> Type of the ReaderContext
 public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends IndexReader {
 
-  /**
-   * Returns {@code true} if the forward index is dictionary-encoded, {@code false} if it is raw.
-   */
+  /// Returns `true` if the forward index is dictionary-encoded, `false` if it is raw.
   boolean isDictionaryEncoded();
 
-  /**
-   * Returns {@code true} if the forward index is for a single-value column, {@code false} if it is for a multi-value
-   * column.
-   */
+  /// Returns `true` if the forward index is for a single-value column, `false` if it is for a multi-value
+  /// column.
   boolean isSingleValue();
 
-  /**
-   * Returns the data type of the values in the forward index. Returns {@link DataType#INT} for dictionary-encoded
-   * forward index.
-   */
+  /// Returns the data type of the values in the forward index. Returns [DataType#INT] for dictionary-encoded
+  /// forward index.
   DataType getStoredType();
 
-  /**
-   * Returns the compression type (if valid). Only valid for RAW forward index columns implemented in
-   * BaseChunkForwardIndexReader.
-   */
+  /// Returns the compression type (if valid). Only valid for RAW forward index columns implemented in
+  /// BaseChunkForwardIndexReader.
   @Nullable
   default ChunkCompressionType getCompressionType() {
     return null;
   }
 
-  /**
-   * Returns the compression type for dictionary encoded forward index.
-   */
+  /// Returns the compression type for dictionary encoded forward index.
   @Nullable
   default DictIdCompressionType getDictIdCompressionType() {
     return null;
   }
 
-  /**
-   * Returns the length of the longest entry. Only valid for RAW forward index columns implemented in
-   * BaseChunkForwardIndexReader. Returns -1 otherwise.
-   * @return
-   */
+  /// Returns the length of the longest entry. Only valid for RAW forward index columns implemented in
+  /// BaseChunkForwardIndexReader. Returns -1 otherwise.
+  /// @return
   default int getLengthOfLongestEntry() {
     return -1;
   }
 
-  /**
-   * Creates a new {@link ForwardIndexReaderContext} of the reader which can be used to accelerate the reads.
-   * NOTE: Caller is responsible for closing the returned reader context.
-   */
+  /// Creates a new [ForwardIndexReaderContext] of the reader which can be used to accelerate the reads.
+  /// NOTE: Caller is responsible for closing the returned reader context.
   @Nullable
   default T createContext() {
     return null;
   }
 
-  /**
-   * DICTIONARY-ENCODED INDEX APIs
-   */
+  /// Creates a new [ForwardIndexReaderContext] with query-level options so that reader implementations can
+  /// adjust per-query behavior (e.g., bypassing caches). Falls back to [#createContext()] by default.
+  @Nullable
+  default T createContext(Map<String, String> queryOptions) {
+    return createContext();
+  }
 
-  /**
-   * Reads the dictionary id for a single-value column at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return Dictionary id at the given document id
-   */
+  /// DICTIONARY-ENCODED INDEX APIs
+
+  /// Reads the dictionary id for a single-value column at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return Dictionary id at the given document id
   default int getDictId(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Batch reads multiple dictionary ids for a single-value column at the given document ids into the passed in buffer
-   * (the buffer size must be larger than or equal to the length).
-   *
-   * @param docIds Array containing the document ids to read
-   * @param length Number of values to read
-   * @param dictIdBuffer Dictionary id buffer
-   * @param context Reader context
-   */
+  /// Batch reads multiple dictionary ids for a single-value column at the given document ids into the passed in buffer
+  /// (the buffer size must be larger than or equal to the length).
+  ///
+  /// @param docIds Array containing the document ids to read
+  /// @param length Number of values to read
+  /// @param dictIdBuffer Dictionary id buffer
+  /// @param context Reader context
   default void readDictIds(int[] docIds, int length, int[] dictIdBuffer, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the dictionary ids for a multi-value column at the given document id into the passed in buffer (the buffer
-   * size must be enough to hold all the values for the multi-value entry) and returns the number of values within the
-   * multi-value entry.
-   *
-   * @param docId Document id
-   * @param dictIdBuffer Dictionary id buffer
-   * @param context Reader context
-   * @return Number of values within the multi-value entry
-   */
+  /// Reads the dictionary ids for a multi-value column at the given document id into the passed in buffer (the buffer
+  /// size must be enough to hold all the values for the multi-value entry) and returns the number of values within the
+  /// multi-value entry.
+  ///
+  /// @param docId Document id
+  /// @param dictIdBuffer Dictionary id buffer
+  /// @param context Reader context
+  /// @return Number of values within the multi-value entry
   default int getDictIdMV(int docId, int[] dictIdBuffer, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the dictionary ids for a multi-value column at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return Dictionary ids at the given document id
-   */
+  /// Reads the dictionary ids for a multi-value column at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return Dictionary ids at the given document id
   default int[] getDictIdMV(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * SINGLE-VALUE COLUMN RAW INDEX APIs
-   */
+  /// SINGLE-VALUE COLUMN RAW INDEX APIs
 
-  /**
-   * Fills the values
-   * @param docIds Array containing the document ids to read
-   * @param length Number of values to read
-   * @param values Values to fill
-   * @param context Reader context
-   */
+  /// Fills the values
+  /// @param docIds Array containing the document ids to read
+  /// @param length Number of values to read
+  /// @param values Values to fill
+  /// @param context Reader context
   default void readValuesSV(int[] docIds, int length, int[] values, T context) {
     switch (getStoredType()) {
       case INT:
@@ -193,13 +170,11 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
     }
   }
 
-  /**
-   * Fills the values
-   * @param docIds Array containing the document ids to read
-   * @param length Number of values to read
-   * @param values Values to fill
-   * @param context Reader context
-   */
+  /// Fills the values
+  /// @param docIds Array containing the document ids to read
+  /// @param length Number of values to read
+  /// @param values Values to fill
+  /// @param context Reader context
   default void readValuesSV(int[] docIds, int length, long[] values, T context) {
     switch (getStoredType()) {
       case INT:
@@ -237,13 +212,11 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
     }
   }
 
-  /**
-   * Fills the values
-   * @param docIds Array containing the document ids to read
-   * @param length Number of values to read
-   * @param values Values to fill
-   * @param context Reader context
-   */
+  /// Fills the values
+  /// @param docIds Array containing the document ids to read
+  /// @param length Number of values to read
+  /// @param values Values to fill
+  /// @param context Reader context
   default void readValuesSV(int[] docIds, int length, float[] values, T context) {
     switch (getStoredType()) {
       case INT:
@@ -281,13 +254,11 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
     }
   }
 
-  /**
-   * Fills the values
-   * @param docIds Array containing the document ids to read
-   * @param length Number of values to read
-   * @param values Values to fill
-   * @param context Reader context
-   */
+  /// Fills the values
+  /// @param docIds Array containing the document ids to read
+  /// @param length Number of values to read
+  /// @param values Values to fill
+  /// @param context Reader context
   default void readValuesSV(int[] docIds, int length, double[] values, T context) {
     switch (getStoredType()) {
       case INT:
@@ -325,13 +296,11 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
     }
   }
 
-  /**
-   * Fills the values
-   * @param docIds Array containing the document ids to read
-   * @param length Number of values to read
-   * @param values Values to fill
-   * @param context Reader context
-   */
+  /// Fills the values
+  /// @param docIds Array containing the document ids to read
+  /// @param length Number of values to read
+  /// @param values Values to fill
+  /// @param context Reader context
   default void readValuesSV(int[] docIds, int length, BigDecimal[] values, T context) {
     // todo(nhejazi): add raw index support to the BIG_DECIMAL type. In most of the cases, it will be more efficient
     //  to store big decimal as raw.
@@ -423,90 +392,74 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
     }
   }
 
-  /**
-   * Reads the INT value at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return INT type single-value at the given document id
-   */
+  /// Reads the INT value at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return INT type single-value at the given document id
   default int getInt(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the LONG type single-value at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return LONG type single-value at the given document id
-   */
+  /// Reads the LONG type single-value at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return LONG type single-value at the given document id
   default long getLong(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the FLOAT type single-value at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return FLOAT type single-value at the given document id
-   */
+  /// Reads the FLOAT type single-value at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return FLOAT type single-value at the given document id
   default float getFloat(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the DOUBLE type single-value at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return DOUBLE type single-value at the given document id
-   */
+  /// Reads the DOUBLE type single-value at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return DOUBLE type single-value at the given document id
   default double getDouble(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the BIG_DECIMAL type single-value at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return BIG_DECIMAL type single-value at the given document id
-   */
+  /// Reads the BIG_DECIMAL type single-value at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return BIG_DECIMAL type single-value at the given document id
   default BigDecimal getBigDecimal(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the STRING type single-value at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return STRING type single-value at the given document id
-   */
+  /// Reads the STRING type single-value at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return STRING type single-value at the given document id
   default String getString(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the BYTES type single-value at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return BYTES type single-value at the given document id
-   */
+  /// Reads the BYTES type single-value at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return BYTES type single-value at the given document id
   default byte[] getBytes(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the MAP type single-value at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return MAP type single-value at the given document id
-   */
+  /// Reads the MAP type single-value at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return MAP type single-value at the given document id
   default Map<String, Object> getMap(int docId, T context) {
     throw new UnsupportedOperationException("This ForwardIndexReader does not support MAP types. "
         + "This indicates that either the column is getting mistyped or the wrong "
@@ -525,18 +478,14 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
     return MurmurHashFunctions.murmurHash3X64Bit128AsLongs(getBytes(docId, context), 0);
   }
 
-  /**
-   * MULTI-VALUE COLUMN RAW INDEX APIs
-   */
+  /// MULTI-VALUE COLUMN RAW INDEX APIs
 
-  /**
-   * Fills the values
-   * @param docIds Array containing the document ids to read
-   * @param length Number of values to read
-   * @param maxNumValuesPerMVEntry Maximum number of values per MV entry
-   * @param values Values to fill
-   * @param context Reader context
-   */
+  /// Fills the values
+  /// @param docIds Array containing the document ids to read
+  /// @param length Number of values to read
+  /// @param maxNumValuesPerMVEntry Maximum number of values per MV entry
+  /// @param values Values to fill
+  /// @param context Reader context
   default void readValuesMV(int[] docIds, int length, int maxNumValuesPerMVEntry, int[][] values, T context) {
     switch (getStoredType()) {
       case INT:
@@ -574,6 +523,16 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
           }
         }
         break;
+      case BIG_DECIMAL:
+        BigDecimal[] bigDecimalValueBuffer = new BigDecimal[maxNumValuesPerMVEntry];
+        for (int i = 0; i < length; i++) {
+          int numValues = getBigDecimalMV(docIds[i], bigDecimalValueBuffer, context);
+          values[i] = new int[numValues];
+          for (int j = 0; j < numValues; j++) {
+            values[i][j] = bigDecimalValueBuffer[j].intValue();
+          }
+        }
+        break;
       case STRING:
         String[] stringValueBuffer = new String[maxNumValuesPerMVEntry];
         for (int i = 0; i < length; i++) {
@@ -589,14 +548,12 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
     }
   }
 
-  /**
-   * Fills the values
-   * @param docIds Array containing the document ids to read
-   * @param length Number of values to read
-   * @param maxNumValuesPerMVEntry Maximum number of values per MV entry
-   * @param values Values to fill
-   * @param context Reader context
-   */
+  /// Fills the values
+  /// @param docIds Array containing the document ids to read
+  /// @param length Number of values to read
+  /// @param maxNumValuesPerMVEntry Maximum number of values per MV entry
+  /// @param values Values to fill
+  /// @param context Reader context
   default void readValuesMV(int[] docIds, int length, int maxNumValuesPerMVEntry, long[][] values, T context) {
     switch (getStoredType()) {
       case INT:
@@ -634,6 +591,16 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
           }
         }
         break;
+      case BIG_DECIMAL:
+        BigDecimal[] bigDecimalValueBuffer = new BigDecimal[maxNumValuesPerMVEntry];
+        for (int i = 0; i < length; i++) {
+          int numValues = getBigDecimalMV(docIds[i], bigDecimalValueBuffer, context);
+          values[i] = new long[numValues];
+          for (int j = 0; j < numValues; j++) {
+            values[i][j] = bigDecimalValueBuffer[j].longValue();
+          }
+        }
+        break;
       case STRING:
         String[] stringValueBuffer = new String[maxNumValuesPerMVEntry];
         for (int i = 0; i < length; i++) {
@@ -649,14 +616,12 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
     }
   }
 
-  /**
-   * Fills the values
-   * @param docIds Array containing the document ids to read
-   * @param length Number of values to read
-   * @param maxNumValuesPerMVEntry Maximum number of values per MV entry
-   * @param values Values to fill
-   * @param context Reader context
-   */
+  /// Fills the values
+  /// @param docIds Array containing the document ids to read
+  /// @param length Number of values to read
+  /// @param maxNumValuesPerMVEntry Maximum number of values per MV entry
+  /// @param values Values to fill
+  /// @param context Reader context
   default void readValuesMV(int[] docIds, int length, int maxNumValuesPerMVEntry, float[][] values, T context) {
     switch (getStoredType()) {
       case INT:
@@ -694,6 +659,16 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
           }
         }
         break;
+      case BIG_DECIMAL:
+        BigDecimal[] bigDecimalValueBuffer = new BigDecimal[maxNumValuesPerMVEntry];
+        for (int i = 0; i < length; i++) {
+          int numValues = getBigDecimalMV(docIds[i], bigDecimalValueBuffer, context);
+          values[i] = new float[numValues];
+          for (int j = 0; j < numValues; j++) {
+            values[i][j] = bigDecimalValueBuffer[j].floatValue();
+          }
+        }
+        break;
       case STRING:
         String[] stringValueBuffer = new String[maxNumValuesPerMVEntry];
         for (int i = 0; i < length; i++) {
@@ -709,14 +684,12 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
     }
   }
 
-  /**
-   * Fills the values
-   * @param docIds Array containing the document ids to read
-   * @param length Number of values to read
-   * @param maxNumValuesPerMVEntry Maximum number of values per MV entry
-   * @param values Values to fill
-   * @param context Reader context
-   */
+  /// Fills the values
+  /// @param docIds Array containing the document ids to read
+  /// @param length Number of values to read
+  /// @param maxNumValuesPerMVEntry Maximum number of values per MV entry
+  /// @param values Values to fill
+  /// @param context Reader context
   default void readValuesMV(int[] docIds, int length, int maxNumValuesPerMVEntry, double[][] values, T context) {
     switch (getStoredType()) {
       case INT:
@@ -754,6 +727,16 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
           values[i] = getDoubleMV(docIds[i], context);
         }
         break;
+      case BIG_DECIMAL:
+        BigDecimal[] bigDecimalValueBuffer = new BigDecimal[maxNumValuesPerMVEntry];
+        for (int i = 0; i < length; i++) {
+          int numValues = getBigDecimalMV(docIds[i], bigDecimalValueBuffer, context);
+          values[i] = new double[numValues];
+          for (int j = 0; j < numValues; j++) {
+            values[i][j] = bigDecimalValueBuffer[j].doubleValue();
+          }
+        }
+        break;
       case STRING:
         String[] stringValueBuffer = new String[maxNumValuesPerMVEntry];
         for (int i = 0; i < length; i++) {
@@ -769,14 +752,12 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
     }
   }
 
-  /**
-   * Fills the values
-   * @param docIds Array containing the document ids to read
-   * @param length Number of values to read
-   * @param maxNumValuesPerMVEntry Maximum number of values per MV entry
-   * @param values Values to fill
-   * @param context Reader context
-   */
+  /// Fills the values
+  /// @param docIds Array containing the document ids to read
+  /// @param length Number of values to read
+  /// @param maxNumValuesPerMVEntry Maximum number of values per MV entry
+  /// @param values Values to fill
+  /// @param context Reader context
   default void readValuesMV(int[] docIds, int length, int maxNumValuesPerMVEntry, String[][] values, T context) {
     switch (getStoredType()) {
       case INT:
@@ -819,6 +800,16 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
           }
         }
         break;
+      case BIG_DECIMAL:
+        BigDecimal[] bigDecimalValueBuffer = new BigDecimal[maxNumValuesPerMVEntry];
+        for (int i = 0; i < length; i++) {
+          int numValues = getBigDecimalMV(docIds[i], bigDecimalValueBuffer, context);
+          values[i] = new String[numValues];
+          for (int j = 0; j < numValues; j++) {
+            values[i][j] = bigDecimalValueBuffer[j].toPlainString();
+          }
+        }
+        break;
       case STRING:
         for (int i = 0; i < length; i++) {
           values[i] = getStringMV(docIds[i], context);
@@ -829,241 +820,298 @@ public interface ForwardIndexReader<T extends ForwardIndexReaderContext> extends
     }
   }
 
-  /**
-   * Fills the values
-   * @param docIds Array containing the document ids to read
-   * @param length Number of values to read
-   * @param maxNumValuesPerMVEntry Maximum number of values per MV entry
-   * @param values Values to fill
-   * @param context Reader context
-   */
+  /// Fills the values
+  /// @param docIds Array containing the document ids to read
+  /// @param length Number of values to read
+  /// @param maxNumValuesPerMVEntry Maximum number of values per MV entry
+  /// @param values Values to fill
+  /// @param context Reader context
+  default void readValuesMV(int[] docIds, int length, int maxNumValuesPerMVEntry, BigDecimal[][] values, T context) {
+    switch (getStoredType()) {
+      case INT: {
+        int[] valueBuffer = new int[maxNumValuesPerMVEntry];
+        for (int i = 0; i < length; i++) {
+          int numValues = getIntMV(docIds[i], valueBuffer, context);
+          BigDecimal[] row = new BigDecimal[numValues];
+          for (int j = 0; j < numValues; j++) {
+            row[j] = BigDecimal.valueOf(valueBuffer[j]);
+          }
+          values[i] = row;
+        }
+        break;
+      }
+      case LONG: {
+        long[] valueBuffer = new long[maxNumValuesPerMVEntry];
+        for (int i = 0; i < length; i++) {
+          int numValues = getLongMV(docIds[i], valueBuffer, context);
+          BigDecimal[] row = new BigDecimal[numValues];
+          for (int j = 0; j < numValues; j++) {
+            row[j] = BigDecimal.valueOf(valueBuffer[j]);
+          }
+          values[i] = row;
+        }
+        break;
+      }
+      case FLOAT: {
+        float[] valueBuffer = new float[maxNumValuesPerMVEntry];
+        for (int i = 0; i < length; i++) {
+          int numValues = getFloatMV(docIds[i], valueBuffer, context);
+          BigDecimal[] row = new BigDecimal[numValues];
+          for (int j = 0; j < numValues; j++) {
+            row[j] = BigDecimal.valueOf(valueBuffer[j]);
+          }
+          values[i] = row;
+        }
+        break;
+      }
+      case DOUBLE: {
+        double[] valueBuffer = new double[maxNumValuesPerMVEntry];
+        for (int i = 0; i < length; i++) {
+          int numValues = getDoubleMV(docIds[i], valueBuffer, context);
+          BigDecimal[] row = new BigDecimal[numValues];
+          for (int j = 0; j < numValues; j++) {
+            row[j] = BigDecimal.valueOf(valueBuffer[j]);
+          }
+          values[i] = row;
+        }
+        break;
+      }
+      case BIG_DECIMAL:
+        for (int i = 0; i < length; i++) {
+          values[i] = getBigDecimalMV(docIds[i], context);
+        }
+        break;
+      case STRING: {
+        String[] valueBuffer = new String[maxNumValuesPerMVEntry];
+        for (int i = 0; i < length; i++) {
+          int numValues = getStringMV(docIds[i], valueBuffer, context);
+          BigDecimal[] row = new BigDecimal[numValues];
+          for (int j = 0; j < numValues; j++) {
+            row[j] = new BigDecimal(valueBuffer[j]);
+          }
+          values[i] = row;
+        }
+        break;
+      }
+      default:
+        throw new IllegalArgumentException("readValuesMV not supported for type " + getStoredType());
+    }
+  }
+
+  /// Fills the values
+  /// @param docIds Array containing the document ids to read
+  /// @param length Number of values to read
+  /// @param maxNumValuesPerMVEntry Maximum number of values per MV entry
+  /// @param values Values to fill
+  /// @param context Reader context
   default void readValuesMV(int[] docIds, int length, int maxNumValuesPerMVEntry, byte[][][] values, T context) {
     for (int i = 0; i < length; i++) {
       values[i] = getBytesMV(docIds[i], context);
     }
   }
 
-  /**
-   * Reads the INT type multi-value at the given document id into the passed in value buffer (the buffer size must be
-   * enough to hold all the values for the multi-value entry) and returns the number of values within the multi-value
-   * entry.
-   *
-   * @param docId Document id
-   * @param valueBuffer Value buffer
-   * @param context Reader context
-   * @return Number of values within the multi-value entry
-   */
+  /// Reads the INT type multi-value at the given document id into the passed in value buffer (the buffer size must be
+  /// enough to hold all the values for the multi-value entry) and returns the number of values within the multi-value
+  /// entry.
+  ///
+  /// @param docId Document id
+  /// @param valueBuffer Value buffer
+  /// @param context Reader context
+  /// @return Number of values within the multi-value entry
   default int getIntMV(int docId, int[] valueBuffer, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the INT type multi-value at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return INT values at the given document id
-   */
+  /// Reads the INT type multi-value at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return INT values at the given document id
   default int[] getIntMV(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the LONG type multi-value at the given document id into the passed in value buffer (the buffer size must be
-   * enough to hold all the values for the multi-value entry) and returns the number of values within the multi-value
-   * entry.
-   *
-   * @param docId Document id
-   * @param valueBuffer Value buffer
-   * @param context Reader context
-   * @return Number of values within the multi-value entry
-   */
+  /// Reads the LONG type multi-value at the given document id into the passed in value buffer (the buffer size must be
+  /// enough to hold all the values for the multi-value entry) and returns the number of values within the multi-value
+  /// entry.
+  ///
+  /// @param docId Document id
+  /// @param valueBuffer Value buffer
+  /// @param context Reader context
+  /// @return Number of values within the multi-value entry
   default int getLongMV(int docId, long[] valueBuffer, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the LONG type multi-value at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return LONG values at the given document id
-   */
+  /// Reads the LONG type multi-value at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return LONG values at the given document id
   default long[] getLongMV(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the FLOAT type multi-value at the given document id into the passed in value buffer (the buffer size must be
-   * enough to hold all the values for the multi-value entry) and returns the number of values within the multi-value
-   * entry.
-   *
-   * @param docId Document id
-   * @param valueBuffer Value buffer
-   * @param context Reader context
-   * @return Number of values within the multi-value entry
-   */
+  /// Reads the FLOAT type multi-value at the given document id into the passed in value buffer (the buffer size must be
+  /// enough to hold all the values for the multi-value entry) and returns the number of values within the multi-value
+  /// entry.
+  ///
+  /// @param docId Document id
+  /// @param valueBuffer Value buffer
+  /// @param context Reader context
+  /// @return Number of values within the multi-value entry
   default int getFloatMV(int docId, float[] valueBuffer, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the FLOAT type multi-value at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return FLOAT values at the given document id
-   */
+  /// Reads the FLOAT type multi-value at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return FLOAT values at the given document id
   default float[] getFloatMV(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the DOUBLE type multi-value at the given document id into the passed in value buffer (the buffer size must
-   * be enough to hold all the values for the multi-value entry) and returns the number of values within the multi-value
-   * entry.
-   *
-   * @param docId Document id
-   * @param valueBuffer Value buffer
-   * @param context Reader context
-   * @return Number of values within the multi-value entry
-   */
+  /// Reads the DOUBLE type multi-value at the given document id into the passed in value buffer (the buffer size must
+  /// be enough to hold all the values for the multi-value entry) and returns the number of values within the
+  /// multi-value entry.
+  ///
+  /// @param docId Document id
+  /// @param valueBuffer Value buffer
+  /// @param context Reader context
+  /// @return Number of values within the multi-value entry
   default int getDoubleMV(int docId, double[] valueBuffer, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the DOUBLE type multi-value at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return DOUBLE values at the given document id
-   */
+  /// Reads the DOUBLE type multi-value at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return DOUBLE values at the given document id
   default double[] getDoubleMV(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the STRING type multi-value at the given document id into the passed in value buffer (the buffer size must
-   * be enough to hold all the values for the multi-value entry) and returns the number of values within the multi-value
-   * entry.
-   *
-   * @param docId Document id
-   * @param valueBuffer Value buffer
-   * @param context Reader context
-   * @return Number of values within the multi-value entry
-   */
+  /// Reads the BIG_DECIMAL type multi-value at the given document id into the passed in value buffer (the buffer size
+  /// must be enough to hold all the values for the multi-value entry) and returns the number of values within the
+  /// multi-value entry.
+  ///
+  /// @param docId Document id
+  /// @param valueBuffer Value buffer
+  /// @param context Reader context
+  /// @return Number of values within the multi-value entry
+  default int getBigDecimalMV(int docId, BigDecimal[] valueBuffer, T context) {
+    throw new UnsupportedOperationException();
+  }
+
+  /// Reads the BIG_DECIMAL type multi-value at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return BIG_DECIMAL values at the given document id
+  default BigDecimal[] getBigDecimalMV(int docId, T context) {
+    throw new UnsupportedOperationException();
+  }
+
+  /// Reads the STRING type multi-value at the given document id into the passed in value buffer (the buffer size must
+  /// be enough to hold all the values for the multi-value entry) and returns the number of values within the
+  /// multi-value entry.
+  ///
+  /// @param docId Document id
+  /// @param valueBuffer Value buffer
+  /// @param context Reader context
+  /// @return Number of values within the multi-value entry
   default int getStringMV(int docId, String[] valueBuffer, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the STRING type multi-value at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return STRING values at the given document id
-   */
+  /// Reads the STRING type multi-value at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return STRING values at the given document id
   default String[] getStringMV(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the bytes type multi-value at the given document id into the passed in value buffer (the buffer size must
-   * be enough to hold all the values for the multi-value entry) and returns the number of values within the multi-value
-   * entry.
-   *
-   * @param docId Document id
-   * @param valueBuffer Value buffer
-   * @param context Reader context
-   * @return Number of values within the multi-value entry
-   */
+  /// Reads the bytes type multi-value at the given document id into the passed in value buffer (the buffer size must be
+  /// enough to hold all the values for the multi-value entry) and returns the number of values within the multi-value
+  /// entry.
+  ///
+  /// @param docId Document id
+  /// @param valueBuffer Value buffer
+  /// @param context Reader context
+  /// @return Number of values within the multi-value entry
   default int getBytesMV(int docId, byte[][] valueBuffer, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Reads the bytes type multi-value at the given document id.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return BYTE values at the given document id
-   */
+  /// Reads the bytes type multi-value at the given document id.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return BYTE values at the given document id
   default byte[][] getBytesMV(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Gets the number of multi-values at a given document id and returns it.
-   *
-   * @param docId Document id
-   * @param context Reader context
-   * @return Number of values within the multi-value entry
-   */
+  /// Gets the number of multi-values at a given document id and returns it.
+  ///
+  /// @param docId Document id
+  /// @param context Reader context
+  /// @return Number of values within the multi-value entry
   default int getNumValuesMV(int docId, T context) {
     throw new UnsupportedOperationException();
   }
 
   // Functions for recording absolute buffer byte ranges accessed while reading a given docId
 
-  /**
-   * Returns whether the forward index supports recording the byte ranges accessed while reading a given docId.
-   * For readers that do support this info, caller should check if the buffer is a {@link #isFixedOffsetMappingType}.
-   * If yes, the byte range mapping for a docId can be calculated using the {@link #getRawDataStartOffset} and the
-   * {@link #getDocLength} functions.
-   * if not, caller should use the {@link #recordDocIdByteRanges} function to get the list of byte ranges accessed
-   * for a docId.
-   */
+  /// Returns whether the forward index supports recording the byte ranges accessed while reading a given docId.
+  /// For readers that do support this info, caller should check if the buffer is a [#isFixedOffsetMappingType].
+  /// If yes, the byte range mapping for a docId can be calculated using the [#getRawDataStartOffset] and the
+  /// [#getDocLength] functions.
+  /// if not, caller should use the [#recordDocIdByteRanges] function to get the list of byte ranges accessed
+  /// for a docId.
   default boolean isBufferByteRangeInfoSupported() {
     return false;
   }
 
-  /**
-   * Returns a list of {@link ByteRange} that represents all the distinct
-   * buffer byte ranges (absolute offset, sizeInBytes) that are accessed when reading the given (@param docId}
-   * @param docId to find the range for
-   * @param context Reader context
-   * @param ranges List of {@link ByteRange} to which the applicable value ranges will be added
-   */
+  /// Returns a list of [ByteRange] that represents all the distinct
+  /// buffer byte ranges (absolute offset, sizeInBytes) that are accessed when reading the given (@param docId}
+  /// @param docId to find the range for
+  /// @param context Reader context
+  /// @param ranges List of [ByteRange] to which the applicable value ranges will be added
   default void recordDocIdByteRanges(int docId, T context, List<ByteRange> ranges) {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Returns whether the forward index is of fixed length type, and therefore the docId -> byte range mapping is fixed
-   * @return true if forward index has a fixed mapping of docId -> buffer offsets
-   * (eg: FixedBitSVForwardIndexReader, FixedByteChunkSVForwardIndexReader (if buffer is uncompressed) etc), false
-   * otherwise
-   */
+  /// Returns whether the forward index is of fixed length type, and therefore the docId -> byte range mapping is fixed
+  /// @return true if forward index has a fixed mapping of docId -> buffer offsets
+  /// (eg: FixedBitSVForwardIndexReader, FixedByteChunkSVForwardIndexReader (if buffer is uncompressed) etc), false
+  /// otherwise
   default boolean isFixedOffsetMappingType() {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Returns the base offset of raw data start within the fwd index buffer, if it's of fixed offset mapping type
-   * @return raw data start offset if the reader is of fixed offset mapping type
-   */
+  /// Returns the base offset of raw data start within the fwd index buffer, if it's of fixed offset mapping type
+  /// @return raw data start offset if the reader is of fixed offset mapping type
   default long getRawDataStartOffset() {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Returns the length of each entry in the forward index, if it's of fixed offset mapping type
-   */
+  /// Returns the length of each entry in the forward index, if it's of fixed offset mapping type
   default int getDocLength() {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Returns whether the length of each entry in the forward index is in bits, if it's of fixed offset mapping type
-   */
+  /// Returns whether the length of each entry in the forward index is in bits, if it's of fixed offset mapping type
   default boolean isDocLengthInBits() {
     return false;
   }
 
-  /**
-   * This class represents the buffer byte ranges accessed while reading a given docId.
-   */
+  /// This class represents the buffer byte ranges accessed while reading a given docId.
   class ByteRange {
     private final long _offset;
     private final int _sizeInBytes;

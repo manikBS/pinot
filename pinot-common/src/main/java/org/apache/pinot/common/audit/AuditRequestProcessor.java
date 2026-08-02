@@ -25,7 +25,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -41,12 +40,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/**
- * Utility class for extracting audit information from Jersey HTTP requests.
- * Handles all the complex logic for IP address extraction, user identification,
- * and request payload capture for audit logging purposes.
- * Uses dynamic configuration to control audit behavior.
- */
+/// Utility class for extracting audit information from Jersey HTTP requests.
+/// Handles all the complex logic for IP address extraction, user identification,
+/// and request payload capture for audit logging purposes.
+/// Uses dynamic configuration to control audit behavior.
 @Singleton
 public class AuditRequestProcessor {
 
@@ -56,25 +53,25 @@ public class AuditRequestProcessor {
   private final AuditConfigManager _configManager;
   private final AuditIdentityResolver _identityResolver;
   private final AuditUrlPathFilter _auditUrlPathFilter;
+  private final AuditMetrics _auditMetrics;
 
   @Inject
   public AuditRequestProcessor(AuditConfigManager configManager, AuditIdentityResolver identityResolver,
-      AuditUrlPathFilter auditUrlPathFilter) {
+      AuditUrlPathFilter auditUrlPathFilter, AuditMetrics auditMetrics) {
     _configManager = configManager;
     _identityResolver = identityResolver;
     _auditUrlPathFilter = auditUrlPathFilter;
+    _auditMetrics = auditMetrics;
   }
 
-  /**
-   * Converts a MultivaluedMap into a Map of query parameters.
-   * If a key in the MultivaluedMap has a single value, that value is added directly to the resulting map.
-   * If a key has multiple values, the list of values is added instead.
-   *
-   * @param multimap the input MultivaluedMap containing keys and their associated values
-   * @param allowedKeys optional set of allowed keys for case-insensitive filtering.
-   *                    If null or empty, all keys are included
-   * @return a Map where each key is mapped to either a single value or a list of values
-   */
+  /// Converts a MultivaluedMap into a Map of query parameters.
+  /// If a key in the MultivaluedMap has a single value, that value is added directly to the resulting map.
+  /// If a key has multiple values, the list of values is added instead.
+  ///
+  /// @param multimap the input MultivaluedMap containing keys and their associated values
+  /// @param allowedKeys optional set of allowed keys for case-insensitive filtering.
+  ///                    If null or empty, all keys are included
+  /// @return a Map where each key is mapped to either a single value or a list of values
   private static Map<String, Object> toMap(MultivaluedMap<String, String> multimap, Set<String> allowedKeys) {
     Map<String, Object> resultMap = new HashMap<>();
     boolean filterKeys = allowedKeys != null && !allowedKeys.isEmpty();
@@ -96,20 +93,18 @@ public class AuditRequestProcessor {
     return resultMap;
   }
 
-  /**
-   * Converts a MultivaluedMap into a Map of query parameters without filtering.
-   * Backward compatibility method.
-   *
-   * @param multimap the input MultivaluedMap containing keys and their associated values
-   * @return a Map where each key is mapped to either a single value or a list of values
-   */
+  /// Converts a MultivaluedMap into a Map of query parameters without filtering.
+  /// Backward compatibility method.
+  ///
+  /// @param multimap the input MultivaluedMap containing keys and their associated values
+  /// @return a Map where each key is mapped to either a single value or a list of values
   private static Map<String, Object> toMap(MultivaluedMap<String, String> multimap) {
     return toMap(multimap, null);
   }
 
   public AuditEvent processRequest(ContainerRequestContext requestContext, String remoteAddr) {
     // Check if auditing is enabled (if config manager is available)
-    if (!isEnabled()) {
+    if (!_configManager.isEnabled()) {
       return null;
     }
 
@@ -137,22 +132,16 @@ public class AuditRequestProcessor {
     return null;
   }
 
-  public boolean isEnabled() {
-    return _configManager.isEnabled();
-  }
-
   private String extractClientIpAddress(ContainerRequestContext requestContext, String remoteAddr) {
     // TODO spyne to be implemented
     return null;
   }
 
-  /**
-   * Extracts service ID from request headers.
-   * Service ID should be provided by the client in headers, not from configuration.
-   *
-   * @param requestContext the container request context
-   * @return the service ID or "unknown" if not found
-   */
+  /// Extracts service ID from request headers.
+  /// Service ID should be provided by the client in headers, not from configuration.
+  ///
+  /// @param requestContext the container request context
+  /// @return the service ID or "unknown" if not found
   private String extractServiceId(ContainerRequestContext requestContext) {
     // TODO spyne to be implemented
     return null;
@@ -199,17 +188,15 @@ public class AuditRequestProcessor {
   }
 
 
-  /**
-   * Parses a comma-separated list of headers into a Set of lowercase header names
-   * for case-insensitive comparison.
-   *
-   * @param headerList comma-separated list of header names
-   * @return Set of lowercase header names, empty if headerList is blank
-   */
+  /// Parses a comma-separated list of headers into a Set of lowercase header names
+  /// for case-insensitive comparison.
+  ///
+  /// @param headerList comma-separated list of header names
+  /// @return Set of lowercase header names, empty if headerList is blank
   @VisibleForTesting
   static Set<String> parseAllowedHeaders(String headerList) {
     if (StringUtils.isBlank(headerList)) {
-      return Collections.emptySet();
+      return Set.of();
     }
 
     Set<String> headers = new HashSet<>();
@@ -223,15 +210,13 @@ public class AuditRequestProcessor {
     return headers;
   }
 
-  /**
-   * Reads the request body from the entity input stream.
-   * Restores the input stream for downstream processing.
-   * Limits the amount of data read based on configuration.
-   *
-   * @param requestContext the request context
-   * @param maxPayloadSize maximum bytes to read from the request body
-   * @return the request body as string (potentially truncated)
-   */
+  /// Reads the request body from the entity input stream.
+  /// Restores the input stream for downstream processing.
+  /// Limits the amount of data read based on configuration.
+  ///
+  /// @param requestContext the request context
+  /// @param maxPayloadSize maximum bytes to read from the request body
+  /// @return the request body as string (potentially truncated)
   @VisibleForTesting
   String readRequestBody(ContainerRequestContext requestContext, int maxPayloadSize) {
     if (!requestContext.hasEntity()) {
@@ -263,6 +248,7 @@ public class AuditRequestProcessor {
         String requestBody = new String(capturedBytes, StandardCharsets.UTF_8);
         if (capturedBytes.length >= maxPayloadSize) {
           requestBody += TRUNCATION_MARKER;
+          _auditMetrics.addMeteredGlobalValue(AuditMetrics.AuditMeter.AUDIT_REQUEST_PAYLOAD_TRUNCATED, 1L);
         }
         return requestBody;
       }

@@ -25,25 +25,25 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import javax.ws.rs.core.HttpHeaders;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.pinot.common.auth.BasicAuthTokenUtils;
 import org.apache.pinot.common.config.provider.AccessControlUserCache;
 import org.apache.pinot.common.utils.BcryptUtils;
 import org.apache.pinot.controller.ControllerConf;
 import org.apache.pinot.controller.helix.core.PinotHelixResourceManager;
-import org.apache.pinot.core.auth.BasicAuthUtils;
+import org.apache.pinot.core.auth.BasicAuthPrincipalUtils;
+import org.apache.pinot.core.auth.TargetType;
 import org.apache.pinot.core.auth.ZkBasicAuthPrincipal;
 import org.apache.pinot.spi.env.PinotConfiguration;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
 
 
-/**
- * Zookeeper Basic Authentication based on Pinot Controller UI.
- * The user role has been distinguished by user and admin. Only admin can have access to the
- * user console page in Pinot controller UI. And admin can change user info (table permission/
- * number of tables/password etc.) or add/delete user without restarting your Pinot clusters,
- * and these changes happen immediately.
- * Users Configuration store in Helix Zookeeper and encrypted user password via Bcrypt Encryption Algorithm.
- *
- */
+/// Zookeeper Basic Authentication based on Pinot Controller UI.
+/// The user role has been distinguished by user and admin. Only admin can have access to the
+/// user console page in Pinot controller UI. And admin can change user info (table permission/
+/// number of tables/password etc.) or add/delete user without restarting your Pinot clusters,
+/// and these changes happen immediately.
+/// Users Configuration store in Helix Zookeeper and encrypted user password via Bcrypt Encryption Algorithm.
 public class ZkBasicAuthAccessControlFactory implements AccessControlFactory {
   private static final String HEADER_AUTHORIZATION = "Authorization";
 
@@ -62,9 +62,7 @@ public class ZkBasicAuthAccessControlFactory implements AccessControlFactory {
     return _accessControl;
   }
 
-  /**
-   * Access Control using header-based basic http authentication
-   */
+  /// Access Control using header-based basic http authentication
   private static class BasicAuthAccessControl implements AccessControl {
     private Map<String, ZkBasicAuthPrincipal> _name2principal;
     private final AccessControlUserCache _userCache;
@@ -86,6 +84,11 @@ public class ZkBasicAuthAccessControlFactory implements AccessControlFactory {
     }
 
     @Override
+    public boolean hasAccess(HttpHeaders httpHeaders, TargetType targetType) {
+      return getPrincipal(httpHeaders).isPresent();
+    }
+
+    @Override
     public boolean hasAccess(AccessType accessType, HttpHeaders httpHeaders, String endpointUrl) {
       return getPrincipal(httpHeaders).isPresent();
     }
@@ -95,22 +98,38 @@ public class ZkBasicAuthAccessControlFactory implements AccessControlFactory {
         return Optional.empty();
       }
 
-      _name2principal = BasicAuthUtils.extractBasicAuthPrincipals(_userCache.getAllControllerUserConfig()).stream()
-          .collect(Collectors.toMap(ZkBasicAuthPrincipal::getName, p -> p));
+      _name2principal = BasicAuthPrincipalUtils.extractBasicAuthPrincipals(_userCache.getAllControllerUserConfig())
+          .stream().collect(Collectors.toMap(ZkBasicAuthPrincipal::getName, p -> p));
 
       List<String> authHeaders = headers.getRequestHeader(HEADER_AUTHORIZATION);
       if (authHeaders == null) {
         return Optional.empty();
       }
-      Map<String, String> name2password = authHeaders.stream().collect(
-          Collectors.toMap(org.apache.pinot.common.auth.BasicAuthUtils::extractUsername,
-              org.apache.pinot.common.auth.BasicAuthUtils::extractPassword));
-      Map<String, ZkBasicAuthPrincipal> password2principal =
-          name2password.keySet().stream().collect(Collectors.toMap(name2password::get, _name2principal::get));
 
-      return password2principal.entrySet().stream().filter(
-          entry -> BcryptUtils.checkpwWithCache(entry.getKey(), entry.getValue().getPassword(),
-              _userCache.getUserPasswordAuthCache())).map(u -> u.getValue()).filter(Objects::nonNull).findFirst();
+      for (String authHeader : authHeaders) {
+        String username = BasicAuthTokenUtils.extractUsername(authHeader);
+        String password = BasicAuthTokenUtils.extractPassword(authHeader);
+        if (StringUtils.isEmpty(username) || StringUtils.isEmpty(password)) {
+          continue;
+        }
+
+        ZkBasicAuthPrincipal principal = _name2principal.get(username);
+        if (principal == null) {
+          continue;
+        }
+
+        if (passwordMatches(principal, password)) {
+          return Optional.of(principal);
+        }
+      }
+      return Optional.empty();
+    }
+
+    private boolean passwordMatches(ZkBasicAuthPrincipal principal, String password) {
+      return BcryptUtils.checkpwWithCache(
+          password,
+          principal.getPassword(),
+          _userCache.getUserPasswordAuthCache());
     }
 
     @Override

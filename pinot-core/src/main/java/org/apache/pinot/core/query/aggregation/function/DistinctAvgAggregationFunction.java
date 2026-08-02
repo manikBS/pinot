@@ -29,9 +29,7 @@ import org.apache.pinot.core.query.aggregation.groupby.GroupByResultHolder;
 import org.apache.pinot.segment.spi.AggregationFunctionType;
 
 
-/**
- * Aggregation function to compute the average of distinct values for an SV column.
- */
+/// Aggregation function to compute the average of distinct values for an SV column.
 public class DistinctAvgAggregationFunction extends BaseDistinctAggregateAggregationFunction<Double> {
 
   public DistinctAvgAggregationFunction(List<ExpressionContext> arguments, boolean nullHandlingEnabled) {
@@ -41,19 +39,37 @@ public class DistinctAvgAggregationFunction extends BaseDistinctAggregateAggrega
   @Override
   public void aggregate(int length, AggregationResultHolder aggregationResultHolder,
       Map<ExpressionContext, BlockValSet> blockValSetMap) {
-    svAggregate(length, aggregationResultHolder, blockValSetMap);
+    BlockValSet blockValSet = blockValSetMap.get(_expression);
+
+    if (blockValSet.isSingleValue()) {
+      svAggregate(blockValSet, length, aggregationResultHolder);
+    } else {
+      mvAggregate(blockValSet, length, aggregationResultHolder);
+    }
   }
 
   @Override
   public void aggregateGroupBySV(int length, int[] groupKeyArray, GroupByResultHolder groupByResultHolder,
       Map<ExpressionContext, BlockValSet> blockValSetMap) {
-    svAggregateGroupBySV(length, groupKeyArray, groupByResultHolder, blockValSetMap);
+    BlockValSet blockValSet = blockValSetMap.get(_expression);
+
+    if (blockValSet.isSingleValue()) {
+      svAggregateGroupBySV(blockValSet, length, groupKeyArray, groupByResultHolder);
+    } else {
+      mvAggregateGroupBySV(blockValSet, length, groupKeyArray, groupByResultHolder);
+    }
   }
 
   @Override
   public void aggregateGroupByMV(int length, int[][] groupKeysArray, GroupByResultHolder groupByResultHolder,
       Map<ExpressionContext, BlockValSet> blockValSetMap) {
-    svAggregateGroupByMV(length, groupKeysArray, groupByResultHolder, blockValSetMap);
+    BlockValSet blockValSet = blockValSetMap.get(_expression);
+
+    if (blockValSet.isSingleValue()) {
+      svAggregateGroupByMV(blockValSet, length, groupKeysArray, groupByResultHolder);
+    } else {
+      mvAggregateGroupByMV(blockValSet, length, groupKeysArray, groupByResultHolder);
+    }
   }
 
   @Override

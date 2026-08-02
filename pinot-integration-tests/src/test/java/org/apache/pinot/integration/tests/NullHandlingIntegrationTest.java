@@ -37,10 +37,8 @@ import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
 
-/**
- * Integration test that creates a Kafka broker, creates a Pinot cluster that consumes from Kafka and queries Pinot.
- * The data pushed to Kafka includes null values.
- */
+/// Integration test that creates a Kafka broker, creates a Pinot cluster that consumes from Kafka and queries Pinot.
+/// The data pushed to Kafka includes null values.
 public class NullHandlingIntegrationTest extends BaseClusterIntegrationTestSet
     implements ExplainIntegrationTestTrait {
 
@@ -51,12 +49,11 @@ public class NullHandlingIntegrationTest extends BaseClusterIntegrationTestSet
 
     // Start the Pinot cluster
     startZk();
+    // Start Kafka
+    startKafka();
     startController();
     startBroker();
     startServer();
-
-    // Start Kafka
-    startKafka();
 
     // Unpack the Avro files
     List<File> avroFiles = unpackAvroData(_tempDir);
@@ -166,6 +163,36 @@ public class NullHandlingIntegrationTest extends BaseClusterIntegrationTestSet
     setUseMultiStageQueryEngine(useMultiStageQueryEngine);
     String query = "SELECT COUNT(*) FROM " + getTableName() + " WHERE description IS NOT NULL AND salary IS NOT NULL";
     testQuery(query);
+  }
+
+  @Test(dataProvider = "useBothQueryEngines")
+  public void testCountWithGivenOrNullSalary(boolean useMultiStageQueryEngine)
+      throws Exception {
+    setUseMultiStageQueryEngine(useMultiStageQueryEngine);
+
+    String query = "SELECT COUNT(*) FROM " + getTableName() + " WHERE salary = 4398214 OR salary IS NULL";
+
+    JsonNode response = postQuery(query);
+    assertTrue(response.get("exceptions").isEmpty());
+    JsonNode rows = response.get("resultTable").get("rows");
+    assertEquals(rows.size(), 1);
+    JsonNode count = rows.get(0).get(0);
+    assertEquals(count.asInt(), 57);
+  }
+
+  @Test(dataProvider = "useBothQueryEngines")
+  public void testCountWithDifferentOrNullSalary(boolean useMultiStageQueryEngine)
+      throws Exception {
+    setUseMultiStageQueryEngine(useMultiStageQueryEngine);
+
+    String query = "SELECT COUNT(*) FROM " + getTableName() + " WHERE salary != 46314 OR salary IS NULL";
+
+    JsonNode response = postQuery(query);
+    assertTrue(response.get("exceptions").isEmpty());
+    JsonNode rows = response.get("resultTable").get("rows");
+    assertEquals(rows.size(), 1);
+    JsonNode count = rows.get(0).get(0);
+    assertEquals(count.asInt(), 99);
   }
 
   @Test(dataProvider = "useBothQueryEngines")
@@ -340,21 +367,56 @@ public class NullHandlingIntegrationTest extends BaseClusterIntegrationTestSet
     // Window functions are only supported in the multi-stage query engine
     setUseMultiStageQueryEngine(true);
     String sqlQuery =
-        "SELECT salary, LAST_VALUE(salary) IGNORE NULLS OVER (ORDER BY DaysSinceEpoch) AS gapfilledSalary from "
-            + "mytable";
+        "SELECT salary, "
+            + "LAST_VALUE(salary) IGNORE NULLS OVER (ORDER BY DaysSinceEpoch) AS gapfilledSalary, "
+            + "LAG(salary) IGNORE NULLS OVER (ORDER BY DaysSinceEpoch) AS prevSalary, "
+            + "LEAD(salary) IGNORE NULLS OVER (ORDER BY DaysSinceEpoch) AS nextSalary "
+            + "FROM mytable";
     JsonNode response = postQuery(sqlQuery);
     assertNoError(response);
-
-    // Check if the LAST_VALUE window function with IGNORE NULLS has effectively gap-filled the salary values
-    Integer lastSalary = null;
     JsonNode rows = response.get("resultTable").get("rows");
-    for (int i = 0; i < rows.size(); i++) {
+    int numRows = rows.size();
+    // The rows are returned in the shared window ORDER BY (DaysSinceEpoch) order, so scanning them in iteration order
+    // reproduces each window function's per-row result even when DaysSinceEpoch has ties (both the window computation
+    // and the verification below see the same row sequence).
+
+    // LAST_VALUE(salary) IGNORE NULLS gap-fills each row with the most recent non-null salary (including itself).
+    Integer lastSalary = null;
+    for (int i = 0; i < numRows; i++) {
       JsonNode row = rows.get(i);
       if (!row.get(0).isNull()) {
         lastSalary = row.get(0).asInt();
-        assertEquals(row.get(1).asInt(), lastSalary);
+        assertEquals(row.get(1).asInt(), (int) lastSalary);
       } else {
         assertEquals(row.get(1).numberValue(), lastSalary);
+      }
+    }
+
+    // LAG(salary) IGNORE NULLS returns the closest preceding non-null salary, or null before the first non-null one.
+    Integer prevNonNullSalary = null;
+    for (int i = 0; i < numRows; i++) {
+      JsonNode row = rows.get(i);
+      if (prevNonNullSalary == null) {
+        assertTrue(row.get(2).isNull());
+      } else {
+        assertEquals(row.get(2).asInt(), (int) prevNonNullSalary);
+      }
+      if (!row.get(0).isNull()) {
+        prevNonNullSalary = row.get(0).asInt();
+      }
+    }
+
+    // LEAD(salary) IGNORE NULLS returns the closest following non-null salary, or null after the last non-null one.
+    Integer nextNonNullSalary = null;
+    for (int i = numRows - 1; i >= 0; i--) {
+      JsonNode row = rows.get(i);
+      if (nextNonNullSalary == null) {
+        assertTrue(row.get(3).isNull());
+      } else {
+        assertEquals(row.get(3).asInt(), (int) nextNonNullSalary);
+      }
+      if (!row.get(0).isNull()) {
+        nextNonNullSalary = row.get(0).asInt();
       }
     }
   }
@@ -458,5 +520,46 @@ public class NullHandlingIntegrationTest extends BaseClusterIntegrationTestSet
         {String.format("SELECT not(null) FROM %s", getTableName()), "null"},
         {String.format("SELECT tan(null) FROM %s", getTableName()), "null"}
     };
+  }
+
+  /// This test ensures IS_TRUE can be trimmed off on leaf stage
+  @Test(dataProvider = "useBothQueryEngines")
+  public void testFilteredAggregationNoScanInFilter(boolean useMultiStageQueryEngine)
+      throws Exception {
+    setUseMultiStageQueryEngine(useMultiStageQueryEngine);
+
+    String query = "SELECT city, COUNT(*), COUNT(*) FILTER(WHERE description = 'unknown') FROM mytable GROUP BY city";
+
+    if (useMultiStageQueryEngine) {
+      // MSE will insert IS_TRUE to the aggregate filter
+      explainLogical(query,
+          "Execution Plan\n"
+              + "PinotLogicalAggregate(group=[{0}], agg#0=[COUNT($1)], agg#1=[COUNT($2)], aggType=[FINAL])\n"
+              + "  PinotLogicalExchange(distribution=[hash[0]])\n"
+              + "    PinotLogicalAggregate(group=[{0}], agg#0=[COUNT()], agg#1=[COUNT() FILTER $1], aggType=[LEAF])\n"
+              + "      LogicalProject(city=[$5], $f1=[IS TRUE(=($7, _UTF-8'unknown'))])\n"
+              + "        PinotLogicalTableScan(table=[[default, mytable]])\n");
+      // IS_TRUE should be trimmed off, then the filter becomes always false in the server execution plan
+      explainAskingServers(query,
+          "Execution Plan\n"
+              + "PinotLogicalAggregate(group=[{0}], agg#0=[COUNT($1)], agg#1=[COUNT($2)], aggType=[FINAL])\n"
+              + "  PinotLogicalExchange(distribution=[hash[0]])\n"
+              + "    LeafStageCombineOperator(table=[mytable])\n"
+              + "      StreamingInstanceResponse\n"
+              + "        CombineGroupBy\n"
+              + "          GroupByFiltered(groupKeys=[[city]], aggregations=[[count(*), count(*)]])\n"
+              + "            Project(columns=[[city]])\n"
+              + "              DocIdSet(maxDocs=[20000])\n"
+              + "                FilterEmpty\n"
+              + "            Project(columns=[[city]])\n"
+              + "              DocIdSet(maxDocs=[20000])\n"
+              + "                FilterMatchEntireSegment(numDocs=[100])\n"
+      );
+    }
+
+    // There should be no scan in the filter since description = 'unknown' matches no value
+    JsonNode response = postQuery(query);
+    assertNoError(response);
+    assertEquals(response.get("numEntriesScannedInFilter").asLong(), 0L);
   }
 }

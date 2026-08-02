@@ -32,7 +32,6 @@ import io.swagger.annotations.SecurityDefinition;
 import io.swagger.annotations.SwaggerDefinition;
 import java.io.IOException;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -54,12 +53,14 @@ import javax.ws.rs.core.Context;
 import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.helix.model.IdealState;
 import org.apache.helix.model.InstanceConfig;
 import org.apache.pinot.common.assignment.InstancePartitions;
 import org.apache.pinot.common.assignment.InstancePartitionsUtils;
 import org.apache.pinot.common.metrics.ControllerMeter;
 import org.apache.pinot.common.metrics.ControllerMetrics;
+import org.apache.pinot.common.restlet.resources.TenantRebalanceResult;
 import org.apache.pinot.controller.api.access.AccessType;
 import org.apache.pinot.controller.api.access.Authenticate;
 import org.apache.pinot.controller.api.exception.ControllerApplicationException;
@@ -69,9 +70,9 @@ import org.apache.pinot.controller.helix.core.controllerjob.ControllerJobTypes;
 import org.apache.pinot.controller.helix.core.rebalance.RebalanceJobConstants;
 import org.apache.pinot.controller.helix.core.rebalance.tenant.TenantRebalanceConfig;
 import org.apache.pinot.controller.helix.core.rebalance.tenant.TenantRebalanceProgressStats;
-import org.apache.pinot.controller.helix.core.rebalance.tenant.TenantRebalanceResult;
 import org.apache.pinot.controller.helix.core.rebalance.tenant.TenantRebalancer;
 import org.apache.pinot.controller.helix.core.rebalance.tenant.TenantTableWithProperties;
+import org.apache.pinot.controller.helix.core.rebalance.tenant.ZkBasedTenantRebalanceObserver;
 import org.apache.pinot.controller.util.TableSizeReader;
 import org.apache.pinot.core.auth.Actions;
 import org.apache.pinot.core.auth.Authorize;
@@ -92,27 +93,23 @@ import static org.apache.pinot.spi.utils.CommonConstants.DATABASE;
 import static org.apache.pinot.spi.utils.CommonConstants.SWAGGER_AUTHORIZATION_KEY;
 
 
-/**
- * <ul>
- *   <li>Sample curl call to create broker tenant</li>
- *   curl -i -X POST -H 'Content-Type: application/json' -d
- *   '{
- *     "role" : "broker",
- *     "numberOfInstances : "5",
- *     "name" : "brokerOne"
- *   }' http://localhost:1234/tenants
- *
- *   <li>Sample curl call to create server tenant</li>
- *   curl -i -X POST -H 'Content-Type: application/json' -d
- *   '{
- *     "role" : "server",
- *     "numberOfInstances : "5",
- *     "name" : "serverOne",
- *     "offlineInstances" : "3",
- *     "realtimeInstances" : "2"
- *   }' http://localhost:1234/tenants
- * </ul>
- */
+/// - Sample curl call to create broker tenant
+///   curl -i -X POST -H 'Content-Type: application/json' -d
+///   '{
+///     "role" : "broker",
+///     "numberOfInstances : "5",
+///     "name" : "brokerOne"
+///   }' http://localhost:1234/tenants
+///
+/// - Sample curl call to create server tenant
+///   curl -i -X POST -H 'Content-Type: application/json' -d
+///   '{
+///     "role" : "server",
+///     "numberOfInstances : "5",
+///     "name" : "serverOne",
+///     "offlineInstances" : "3",
+///     "realtimeInstances" : "2"
+///   }' http://localhost:1234/tenants
 @Api(tags = Constants.TENANT_TAG, authorizations = {
     @Authorization(value = SWAGGER_AUTHORIZATION_KEY),
     @Authorization(value = DATABASE)
@@ -262,6 +259,7 @@ public class PinotTenantRestletResource {
 
   @POST
   @Path("/tenants/{tenantName}")
+  @Authenticate(AccessType.UPDATE)
   @Authorize(targetType = TargetType.CLUSTER, action = Actions.Cluster.UPDATE_TENANT)
   @Produces(MediaType.APPLICATION_JSON)
   @ApiOperation(value = "enable/disable a tenant")
@@ -283,13 +281,11 @@ public class PinotTenantRestletResource {
     }
   }
 
-  /**
-   * This method expects a tenant name and will return a list of tables tagged on that tenant. It assumes that the
-   * tagname is for server tenants only.
-   * @param tenantName
-   * @param tenantType
-   * @return
-   */
+  /// This method expects a tenant name and will return a list of tables tagged on that tenant. It assumes that the
+  /// tagname is for server tenants only.
+  /// @param tenantName
+  /// @param tenantType
+  /// @return
   @GET
   @Path("/tenants/{tenantName}/tables")
   @Authorize(targetType = TargetType.CLUSTER, action = Actions.Cluster.GET_TENANT)
@@ -388,8 +384,9 @@ public class PinotTenantRestletResource {
   private void persistInstancePartitionsHelper(InstancePartitions instancePartitions) {
     try {
       LOGGER.info("Persisting instance partitions: {}", instancePartitions);
+      // WorkloadChangeListener is not needed for tenant instance partitions update
       InstancePartitionsUtils.persistInstancePartitions(_pinotHelixResourceManager.getPropertyStore(),
-          instancePartitions);
+          instancePartitions, null);
     } catch (Exception e) {
       throw new ControllerApplicationException(LOGGER, "Caught Exception while persisting the instance partitions. "
           + "Reason: " + e.getMessage(), Response.Status.INTERNAL_SERVER_ERROR, e);
@@ -468,12 +465,12 @@ public class PinotTenantRestletResource {
 
     if (StateType.DISABLE.name().equalsIgnoreCase(stateStr)) {
       for (String instance : allInstances) {
-        instanceResult.put(instance, JsonUtils.objectToJsonNode(_pinotHelixResourceManager.disableInstance(instance)));
+        instanceResult.set(instance, JsonUtils.objectToJsonNode(_pinotHelixResourceManager.disableInstance(instance)));
       }
     }
     if (StateType.ENABLE.name().equalsIgnoreCase(stateStr)) {
       for (String instance : allInstances) {
-        instanceResult.put(instance, JsonUtils.objectToJsonNode(_pinotHelixResourceManager.enableInstance(instance)));
+        instanceResult.set(instance, JsonUtils.objectToJsonNode(_pinotHelixResourceManager.enableInstance(instance)));
       }
     }
     return new SuccessResponse("Changed state of tenant " + tenantName + " to " + stateStr + " successfully.");
@@ -701,6 +698,42 @@ public class PinotTenantRestletResource {
         Response.Status.INTERNAL_SERVER_ERROR);
   }
 
+  @DELETE
+  @Produces(MediaType.APPLICATION_JSON)
+  @Authenticate(AccessType.DELETE)
+  @Authorize(targetType = TargetType.CLUSTER, action = Actions.Cluster.REBALANCE_TENANT_TABLES)
+  @Path("/tenants/rebalance/{jobId}")
+  @ApiOperation(value = "Cancels a running tenant rebalance job")
+  @ApiResponses(value = {
+      @ApiResponse(code = 200, message = "Success", response = SuccessResponse.class),
+      @ApiResponse(code = 404, message = "Tenant rebalance job not found"),
+      @ApiResponse(code = 500, message = "Internal server error while cancelling the rebalance job")
+  })
+  public SuccessResponse cancelRebalance(
+      @ApiParam(value = "Tenant rebalance job id", required = true) @PathParam("jobId") String jobId) {
+    Map<String, String> jobMetadata =
+        _pinotHelixResourceManager.getControllerJobZKMetadata(jobId, ControllerJobTypes.TENANT_REBALANCE);
+    if (jobMetadata == null) {
+      throw new ControllerApplicationException(LOGGER, "Tenant rebalance job: " + jobId + " not found",
+          Response.Status.NOT_FOUND);
+    }
+    ZkBasedTenantRebalanceObserver observer =
+        new ZkBasedTenantRebalanceObserver(jobId, jobMetadata.get(CommonConstants.ControllerJob.TENANT_NAME),
+            _pinotHelixResourceManager);
+    Pair<List<String>, Boolean> result = observer.cancelJob(true);
+    if (result.getRight()) {
+      return new SuccessResponse(
+          "Successfully cancelled tenant rebalance job: " + jobId + ". Number of table rebalance jobs cancelled: "
+              + result.getLeft().size() + ": " + result.getLeft());
+    } else {
+      throw new ControllerApplicationException(LOGGER,
+          "Failed to cancel tenant rebalance job: " + jobId
+              + " due to update failure to ZK. Number of table rebalance jobs already cancelled: "
+              + result.getLeft().size() + ": " + result.getLeft(),
+          Response.Status.INTERNAL_SERVER_ERROR);
+    }
+  }
+
   @POST
   @Produces(MediaType.APPLICATION_JSON)
   @Authenticate(AccessType.UPDATE)
@@ -819,7 +852,7 @@ public class PinotTenantRestletResource {
       notes = "Get list of rebalance jobs for this tenant")
   public Map<String, Map<String, String>> getControllerJobs(
       @ApiParam(value = "Name of the tenant", required = true) @PathParam("tenantName") String tenantName) {
-    return _pinotHelixResourceManager.getAllJobs(Collections.singleton(ControllerJobTypes.TENANT_REBALANCE),
+    return _pinotHelixResourceManager.getAllJobs(Set.of(ControllerJobTypes.TENANT_REBALANCE),
         jobMetadata -> jobMetadata.get(CommonConstants.ControllerJob.TENANT_NAME)
             .equals(tenantName));
   }

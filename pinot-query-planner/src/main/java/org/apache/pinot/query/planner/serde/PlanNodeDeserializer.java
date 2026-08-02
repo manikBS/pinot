@@ -45,6 +45,7 @@ import org.apache.pinot.query.planner.plannode.ProjectNode;
 import org.apache.pinot.query.planner.plannode.SetOpNode;
 import org.apache.pinot.query.planner.plannode.SortNode;
 import org.apache.pinot.query.planner.plannode.TableScanNode;
+import org.apache.pinot.query.planner.plannode.UnnestNode;
 import org.apache.pinot.query.planner.plannode.ValueNode;
 import org.apache.pinot.query.planner.plannode.WindowNode;
 
@@ -53,6 +54,9 @@ public class PlanNodeDeserializer {
   private PlanNodeDeserializer() {
   }
 
+  // ENRICHEDJOINNODE is a deprecated node case retained for backward-compatible deserialization of plans from
+  // older-version brokers.
+  @SuppressWarnings({"deprecation", "removal"})
   public static PlanNode process(Plan.PlanNode protoNode) {
     switch (protoNode.getNodeCase()) {
       case AGGREGATENODE:
@@ -81,6 +85,8 @@ public class PlanNodeDeserializer {
         return deserializeExplainedNode(protoNode);
       case ENRICHEDJOINNODE:
         return deserializeEnrichedJoinNode(protoNode);
+      case UNNESTNODE:
+        return deserializeUnnestNode(protoNode);
       default:
         throw new IllegalStateException("Unsupported PlanNode type: " + protoNode.getNodeCase());
     }
@@ -88,11 +94,15 @@ public class PlanNodeDeserializer {
 
   private static AggregateNode deserializeAggregateNode(Plan.PlanNode protoNode) {
     Plan.AggregateNode protoAggregateNode = protoNode.getAggregateNode();
+    List<List<Integer>> groupingSets = new ArrayList<>(protoAggregateNode.getGroupingSetsCount());
+    for (Plan.GroupingSet protoGroupingSet : protoAggregateNode.getGroupingSetsList()) {
+      groupingSets.add(protoGroupingSet.getGroupKeyIndexesList());
+    }
     return new AggregateNode(protoNode.getStageId(), extractDataSchema(protoNode), extractNodeHint(protoNode),
         extractInputs(protoNode), convertFunctionCalls(protoAggregateNode.getAggCallsList()),
         protoAggregateNode.getFilterArgsList(), protoAggregateNode.getGroupKeysList(),
         convertAggType(protoAggregateNode.getAggType()), protoAggregateNode.getLeafReturnFinalResult(),
-        convertCollations(protoAggregateNode.getCollationsList()), protoAggregateNode.getLimit());
+        convertCollations(protoAggregateNode.getCollationsList()), protoAggregateNode.getLimit(), groupingSets);
   }
 
   private static FilterNode deserializeFilterNode(Plan.PlanNode protoNode) {
@@ -111,6 +121,7 @@ public class PlanNodeDeserializer {
             protoJoinNode.getMatchCondition()) : null);
   }
 
+  @Deprecated(forRemoval = true, since = "1.6.0")
   private static EnrichedJoinNode deserializeEnrichedJoinNode(Plan.PlanNode protoNode) {
     Plan.EnrichedJoinNode protoEnrichedJoinNode = protoNode.getEnrichedJoinNode();
     // reconstruct filterProjectRex
@@ -136,7 +147,7 @@ public class PlanNodeDeserializer {
         filterProjectRexes,
         protoEnrichedJoinNode.getFetch(),
         protoEnrichedJoinNode.getOffset()
-        );
+    );
   }
 
   private static MailboxReceiveNode deserializeMailboxReceiveNode(Plan.PlanNode protoNode) {
@@ -210,13 +221,47 @@ public class PlanNodeDeserializer {
         extractInputs(protoNode), protoWindowNode.getKeysList(), convertCollations(protoWindowNode.getCollationsList()),
         convertFunctionCalls(protoWindowNode.getAggCallsList()),
         convertWindowFrameType(protoWindowNode.getWindowFrameType()), protoWindowNode.getLowerBound(),
-        protoWindowNode.getUpperBound(), convertLiterals(protoWindowNode.getConstantsList()));
+        protoWindowNode.getUpperBound(), convertWindowExclusion(protoWindowNode.getExclude()),
+        convertLiterals(protoWindowNode.getConstantsList()));
   }
 
   private static ExplainedNode deserializeExplainedNode(Plan.PlanNode protoNode) {
     Plan.ExplainNode protoExplainNode = protoNode.getExplainNode();
     return new ExplainedNode(protoNode.getStageId(), extractDataSchema(protoNode), extractNodeHint(protoNode),
         extractInputs(protoNode), protoExplainNode.getTitle(), protoExplainNode.getAttributesMap());
+  }
+
+  private static UnnestNode deserializeUnnestNode(Plan.PlanNode protoNode) {
+    Plan.UnnestNode protoUnnestNode = protoNode.getUnnestNode();
+
+    // Convert array expressions
+    List<RexExpression> arrayExprs = new ArrayList<>();
+    for (Expressions.Expression expr : protoUnnestNode.getArrayExprsList()) {
+      arrayExprs.add(ProtoExpressionToRexExpression.convertExpression(expr));
+    }
+
+    // Convert element indexes
+    List<Integer> elementIndexes = new ArrayList<>();
+    for (int idx : protoUnnestNode.getElementIndexesList()) {
+      elementIndexes.add(idx);
+    }
+
+    int ordIdx = protoUnnestNode.hasOrdinalityIndex() ? protoUnnestNode.getOrdinalityIndex()
+        : UnnestNode.UNSPECIFIED_INDEX;
+
+    // Passthrough pruning metadata. Absent on plans produced by older brokers, in which case prunedPassthrough is
+    // false and the operator copies the whole input row (legacy behavior).
+    List<Integer> passthroughInputIndexes = new ArrayList<>();
+    for (int idx : protoUnnestNode.getPassthroughInputIndexesList()) {
+      passthroughInputIndexes.add(idx);
+    }
+
+    UnnestNode.TableFunctionContext context =
+        new UnnestNode.TableFunctionContext(protoUnnestNode.getWithOrdinality(), elementIndexes, ordIdx,
+            passthroughInputIndexes, protoUnnestNode.getPrunedPassthrough());
+
+    return new UnnestNode(protoNode.getStageId(), extractDataSchema(protoNode), extractNodeHint(protoNode),
+        extractInputs(protoNode), arrayExprs, context);
   }
 
   private static DataSchema extractDataSchema(Plan.DataSchema protoDataSchema) {
@@ -466,6 +511,21 @@ public class PlanNodeDeserializer {
         return WindowNode.WindowFrameType.RANGE;
       default:
         throw new IllegalStateException("Unsupported WindowFrameType: " + windowFrameType);
+    }
+  }
+
+  private static WindowNode.WindowExclusion convertWindowExclusion(Plan.WindowExclusion exclude) {
+    switch (exclude) {
+      case EXCLUDE_NO_OTHERS:
+        return WindowNode.WindowExclusion.NO_OTHERS;
+      case EXCLUDE_CURRENT_ROW:
+        return WindowNode.WindowExclusion.CURRENT_ROW;
+      case EXCLUDE_GROUP:
+        return WindowNode.WindowExclusion.GROUP;
+      case EXCLUDE_TIES:
+        return WindowNode.WindowExclusion.TIES;
+      default:
+        throw new IllegalStateException("Unsupported WindowExclusion: " + exclude);
     }
   }
 }

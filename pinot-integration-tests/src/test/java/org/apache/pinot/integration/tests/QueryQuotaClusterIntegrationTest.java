@@ -24,9 +24,9 @@ import java.io.UncheckedIOException;
 import java.net.URI;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import org.apache.pinot.broker.broker.helix.BaseBrokerStarter;
-import org.apache.pinot.broker.queryquota.HelixExternalViewBasedQueryQuotaManagerTest;
 import org.apache.pinot.client.BrokerResponse;
 import org.apache.pinot.client.ConnectionFactory;
 import org.apache.pinot.client.JsonAsyncHttpPinotClientTransportFactory;
@@ -52,11 +52,9 @@ import static org.apache.pinot.client.Connection.FAIL_ON_EXCEPTIONS;
 import static org.testng.Assert.assertTrue;
 
 
-/**
- * This test suite is focused only on validating that the config changes are propagated properly as expected.
- * Validations around different cases arising from cluster config, database config and table config are extensively
- * tested as part of {@link HelixExternalViewBasedQueryQuotaManagerTest}
- */
+/// This test suite is focused only on validating that the config changes are propagated properly as expected.
+/// Validations around different cases arising from cluster config, database config and table config are extensively
+/// tested as part of [org.apache.pinot.broker.queryquota.HelixExternalViewBasedQueryQuotaManagerTest]
 public class QueryQuotaClusterIntegrationTest extends BaseClusterIntegrationTest {
   private PinotClientTransport _pinotClientTransport;
   private String _brokerHostPort;
@@ -65,12 +63,16 @@ public class QueryQuotaClusterIntegrationTest extends BaseClusterIntegrationTest
   public void setUp()
       throws Exception {
     TestUtils.ensureDirectoriesExistAndEmpty(_tempDir, _segmentDir, _tarDir);
+    _httpClient = getHttpClient();
 
     // Start the Pinot cluster
     startZk();
     startController();
     startBrokers(1);
     startServers(1);
+
+    // Wait for broker to be ready before getting port (avoid race condition)
+    TestUtils.waitForCondition(aVoid -> !_brokerPorts.isEmpty(), 500, 30000, "Broker ports not available");
     _brokerHostPort = LOCAL_HOST + ":" + _brokerPorts.get(0);
 
     // Create and upload the schema and table config
@@ -84,6 +86,9 @@ public class QueryQuotaClusterIntegrationTest extends BaseClusterIntegrationTest
     addSchema(schema);
     LogicalTableConfig logicalTableConfig = getLogicalTableConfig();
     addLogicalTableConfig(logicalTableConfig);
+
+    // Wait for cluster to be ready before creating connection
+    Thread.sleep(500);
 
     Properties properties = new Properties();
     properties.put(FAIL_ON_EXCEPTIONS, "FALSE");
@@ -311,11 +316,9 @@ public class QueryQuotaClusterIntegrationTest extends BaseClusterIntegrationTest
     runQueriesOnBroker(databaseMaxQps * 2, true, getLogicalTableName());
   }
 
-  /**
-   * Runs the query load with the max rate that the quota can allow and ensures queries are not failing.
-   * Then runs the query load with double the max rate and expects queries to fail due to quota breach.
-   * @param maxRate max rate allowed by the quota
-   */
+  /// Runs the query load with the max rate that the quota can allow and ensures queries are not failing.
+  /// Then runs the query load with double the max rate and expects queries to fail due to quota breach.
+  /// @param maxRate max rate allowed by the quota
   void testQueryRate(int maxRate) {
     verifyQuotaUpdate(maxRate);
     runQueries(maxRate, false);
@@ -348,6 +351,7 @@ public class QueryQuotaClusterIntegrationTest extends BaseClusterIntegrationTest
   private void runQueries(int qps, boolean shouldFail) {
     runQueries(qps, shouldFail, "default");
   }
+
   private void runQueries(int qps, boolean shouldFail, String applicationName) {
     runQueries(qps, shouldFail, applicationName, getTableName());
   }
@@ -480,9 +484,9 @@ public class QueryQuotaClusterIntegrationTest extends BaseClusterIntegrationTest
 
   public void addQueryQuotaToDatabaseConfig(Integer maxQps)
       throws Exception {
-    String url = _controllerRequestURLBuilder.getBaseUrl() + "/databases/default/quotas";
+    String url = getOrCreateAdminClient().getControllerBaseUrl() + "/databases/default/quotas";
     if (maxQps != null) {
-        url += "?maxQueriesPerSecond=" + maxQps;
+      url += "?maxQueriesPerSecond=" + maxQps;
     }
     HttpClient.wrapAndThrowHttpException(_httpClient.sendPostRequest(new URI(url), null, null));
     // to allow change propagation to QueryQuotaManager
@@ -490,7 +494,7 @@ public class QueryQuotaClusterIntegrationTest extends BaseClusterIntegrationTest
 
   public void setQueryQuotaForApplication(Integer maxQps)
       throws Exception {
-    String url = _controllerRequestURLBuilder.getBaseUrl() + "/applicationQuotas/default";
+    String url = getOrCreateAdminClient().getControllerBaseUrl() + "/applicationQuotas/default";
     if (maxQps != null) {
       url += "?maxQueriesPerSecond=" + maxQps;
     }
@@ -501,13 +505,9 @@ public class QueryQuotaClusterIntegrationTest extends BaseClusterIntegrationTest
   public void addQueryQuotaToClusterConfig(Integer maxQps)
       throws Exception {
     if (maxQps == null) {
-      HttpClient.wrapAndThrowHttpException(_httpClient.sendDeleteRequest(new URI(
-        _controllerRequestURLBuilder.forClusterConfigs() + "/"
-            + CommonConstants.Helix.DATABASE_MAX_QUERIES_PER_SECOND)));
+      deleteClusterConfig(CommonConstants.Helix.DATABASE_MAX_QUERIES_PER_SECOND);
     } else {
-      String payload = "{\"" + CommonConstants.Helix.DATABASE_MAX_QUERIES_PER_SECOND + "\":\"" + maxQps + "\"}";
-      HttpClient.wrapAndThrowHttpException(
-          _httpClient.sendJsonPostRequest(new URI(_controllerRequestURLBuilder.forClusterConfigs()), payload));
+      updateClusterConfig(Map.of(CommonConstants.Helix.DATABASE_MAX_QUERIES_PER_SECOND, String.valueOf(maxQps)));
     }
     // to allow change propagation to QueryQuotaManager
   }
@@ -515,18 +515,16 @@ public class QueryQuotaClusterIntegrationTest extends BaseClusterIntegrationTest
   public void addAppQueryQuotaToClusterConfig(Integer maxQps)
       throws Exception {
     if (maxQps == null) {
-      HttpClient.wrapAndThrowHttpException(_httpClient.sendDeleteRequest(new URI(
-          _controllerRequestURLBuilder.forClusterConfigs() + "/"
-              + CommonConstants.Helix.APPLICATION_MAX_QUERIES_PER_SECOND)));
+      deleteClusterConfig(CommonConstants.Helix.APPLICATION_MAX_QUERIES_PER_SECOND);
     } else {
-      String payload = "{\"" + CommonConstants.Helix.APPLICATION_MAX_QUERIES_PER_SECOND + "\":\"" + maxQps + "\"}";
-      HttpClient.wrapAndThrowHttpException(
-          _httpClient.sendJsonPostRequest(new URI(_controllerRequestURLBuilder.forClusterConfigs()), payload));
+      updateClusterConfig(
+          Map.of(CommonConstants.Helix.APPLICATION_MAX_QUERIES_PER_SECOND, String.valueOf(maxQps)));
     }
     // to allow change propagation to QueryQuotaManager
   }
 
-  private static String getLogicalTableName() {
+  @Override
+  protected String getLogicalTableName() {
     return "logical_table";
   }
 

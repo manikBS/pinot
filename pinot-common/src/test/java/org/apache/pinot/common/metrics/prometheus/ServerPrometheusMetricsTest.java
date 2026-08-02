@@ -20,6 +20,10 @@ package org.apache.pinot.common.metrics.prometheus;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import org.apache.pinot.common.metrics.MseMeter;
+import org.apache.pinot.common.metrics.MseMetrics;
+import org.apache.pinot.common.metrics.MseMetricsMode;
+import org.apache.pinot.common.metrics.MseTimer;
 import org.apache.pinot.common.metrics.ServerGauge;
 import org.apache.pinot.common.metrics.ServerMeter;
 import org.apache.pinot.common.metrics.ServerMetrics;
@@ -55,20 +59,29 @@ public abstract class ServerPrometheusMetricsTest extends PinotPrometheusMetrics
   private static final List<ServerGauge> GAUGES_ACCEPTING_PARTITION =
       List.of(ServerGauge.UPSERT_VALID_DOC_ID_SNAPSHOT_COUNT, ServerGauge.UPSERT_PRIMARY_KEYS_IN_SNAPSHOT_COUNT,
           ServerGauge.REALTIME_INGESTION_OFFSET_LAG, ServerGauge.REALTIME_INGESTION_DELAY_MS,
-          ServerGauge.UPSERT_PRIMARY_KEYS_COUNT, ServerGauge.END_TO_END_REALTIME_INGESTION_DELAY_MS,
-          ServerGauge.DEDUP_PRIMARY_KEYS_COUNT, ServerGauge.REALTIME_INGESTION_UPSTREAM_OFFSET,
-          ServerGauge.REALTIME_INGESTION_CONSUMING_OFFSET);
+          ServerGauge.UPSERT_PRIMARY_KEYS_COUNT, ServerGauge.DEDUP_PRIMARY_KEYS_COUNT,
+          ServerGauge.REALTIME_INGESTION_UPSTREAM_OFFSET, ServerGauge.REALTIME_INGESTION_CONSUMING_OFFSET);
 
   private static final List<ServerGauge> GAUGES_ACCEPTING_RAW_TABLE_NAME =
       List.of(ServerGauge.REALTIME_OFFHEAP_MEMORY_USED, ServerGauge.REALTIME_SEGMENT_NUM_PARTITIONS,
           ServerGauge.LUCENE_INDEXING_DELAY_MS, ServerGauge.LUCENE_INDEXING_DELAY_DOCS);
 
+  // pinot.mse.* metrics share the role-agnostic prefix and must be exported from every JVM role
+  // that registers MseMetrics; on server JVMs this exercises the server.yml catch-all rule.
+  private static final String EXPORTED_MSE_METRIC_PREFIX = "pinot_mse_";
+
   private ServerMetrics _serverMetrics;
+
+  private MseMetrics _mseMetrics;
 
   @BeforeClass
   public void setup()
       throws Exception {
     _serverMetrics = new ServerMetrics(_pinotMetricsFactory.getPinotMetricsRegistry());
+    // MSE mode so emissions land in this JVM's PinotMetricsRegistry (the one the JMX exporter is
+    // scraping). MseMetrics is constructed with the shared registry, mirroring how server JVMs
+    // running in MSE/DUAL mode emit pinot.mse.* beans alongside pinot.server.*.
+    _mseMetrics = new MseMetrics(MseMetricsMode.MSE, _pinotMetricsFactory.getPinotMetricsRegistry());
   }
 
   @Test(dataProvider = "serverTimers")
@@ -150,6 +163,18 @@ public abstract class ServerPrometheusMetricsTest extends PinotPrometheusMetrics
     _serverMetrics.addMeteredTableValue(labels, serverMeter, 4L);
   }
 
+  @Test(dataProvider = "mseMeters")
+  public void mseMeterExportedFromServerJmx(MseMeter meter) {
+    _mseMetrics.addMeteredGlobalValue(meter, 1L);
+    assertMeterExportedCorrectly(meter.getMeterName(), EXPORTED_MSE_METRIC_PREFIX);
+  }
+
+  @Test(dataProvider = "mseTimers")
+  public void mseTimerExportedFromServerJmx(MseTimer timer) {
+    _mseMetrics.addTimedValue(timer, 30_000, TimeUnit.MILLISECONDS);
+    assertTimerExportedCorrectly(timer.getTimerName(), EXPORTED_MSE_METRIC_PREFIX);
+  }
+
   @DataProvider(name = "serverTimers")
   public Object[] serverTimers() {
     return ServerTimer.values();  // Provide all values of ServerTimer enum
@@ -163,6 +188,16 @@ public abstract class ServerPrometheusMetricsTest extends PinotPrometheusMetrics
   @DataProvider(name = "serverGauges")
   public Object[] serverGauge() {
     return ServerGauge.values();  // Provide all values of ServerTimer enum
+  }
+
+  @DataProvider(name = "mseMeters")
+  public Object[] mseMeters() {
+    return MseMeter.values();
+  }
+
+  @DataProvider(name = "mseTimers")
+  public Object[] mseTimers() {
+    return MseTimer.values();
   }
 
   private boolean meterTrackingRealtimeExceptions(ServerMeter serverMeter) {

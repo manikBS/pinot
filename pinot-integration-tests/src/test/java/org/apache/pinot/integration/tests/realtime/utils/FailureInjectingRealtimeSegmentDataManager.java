@@ -34,37 +34,35 @@ import org.apache.pinot.spi.utils.retry.AttemptsExceededException;
 import org.apache.pinot.spi.utils.retry.RetriableOperationException;
 
 
-/**
- * A specialized RealtimeSegmentDataManager that lets us inject a forced failure
- * in the commit step, which occurs strictly after the segmentConsumed message.
- */
+/// A specialized RealtimeSegmentDataManager that lets us inject a forced failure
+/// in the commit step, which occurs strictly after the segmentConsumed message.
 public class FailureInjectingRealtimeSegmentDataManager extends RealtimeSegmentDataManager {
 
   // This flag controls whether commit should forcibly fail.
   private final boolean _failCommit;
 
-  /**
-   * Creates a manager that will forcibly fail the commit segment step.
-   */
+  /// Creates a manager that will forcibly fail the commit segment step.
   public FailureInjectingRealtimeSegmentDataManager(SegmentZKMetadata segmentZKMetadata, TableConfig tableConfig,
       RealtimeTableDataManager realtimeTableDataManager, String resourceDataDir, IndexLoadingConfig indexLoadingConfig,
       Schema schema, LLCSegmentName llcSegmentName, ConsumerCoordinator consumerCoordinator,
       ServerMetrics serverMetrics, boolean failCommit, PartitionDedupMetadataManager partitionDedupMetadataManager,
-      BooleanSupplier isTableReadyToConsumeData)
+      BooleanSupplier isTableReadyToConsumeData, boolean failConsumingTransition)
       throws AttemptsExceededException, RetriableOperationException {
     // Pass through to the real parent constructor
     super(segmentZKMetadata, tableConfig, realtimeTableDataManager, resourceDataDir, indexLoadingConfig, schema,
         llcSegmentName, consumerCoordinator, serverMetrics, null /* no PartitionUpsertMetadataManager */,
         partitionDedupMetadataManager, isTableReadyToConsumeData);
-
+    if (failConsumingTransition) {
+      throw new RuntimeException("Forced to fail the consuming transition");
+    }
     _failCommit = failCommit;
   }
 
   protected SegmentBuildDescriptor buildSegmentInternal(boolean forCommit)
       throws SegmentBuildFailureException {
-     if (_failCommit) {
-       throw new RuntimeException("Forced failure in buildSegmentInternal");
-     }
-     return super.buildSegmentInternal(forCommit);
+    if (_failCommit) {
+      throw new RuntimeException("Forced failure in buildSegmentInternal");
+    }
+    return super.buildSegmentInternal(forCommit);
   }
 }

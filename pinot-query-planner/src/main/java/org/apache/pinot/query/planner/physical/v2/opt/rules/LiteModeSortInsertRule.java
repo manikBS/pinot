@@ -37,18 +37,14 @@ import org.apache.pinot.query.planner.physical.v2.opt.PRelOptRuleCall;
 import org.apache.pinot.query.type.TypeFactory;
 
 
-/**
- * Lite mode sets a hard limit on the number of rows that the leaf stage is allowed to return. This rule ensures the
- * same. This is done by adding a Sort in the leaf stage if one doesn't exist already.
- * <p>
- *  When the leaf stage has an aggregation and no Sort, then we can add the limit to the aggregate itself to enable
- *  server-level group trimming, which achieves the same purpose as adding a Sort. If the aggregation limit is higher
- *  than the hard-limit, then this Rule will throw an error.
- * </p>
- * <p>
- *   When the leaf stage has a Sort already, we verify that the limit doesn't exceed the configured hard limit.
- * </p>
- */
+/// Lite mode sets a hard limit on the number of rows that the leaf stage is allowed to return. This rule ensures the
+/// same. This is done by adding a Sort in the leaf stage if one doesn't exist already.
+///
+///  When the leaf stage has an aggregation and no Sort, then we can add the limit to the aggregate itself to enable
+///  server-level group trimming, which achieves the same purpose as adding a Sort. If the aggregation limit is higher
+///  than the hard-limit, then this Rule will throw an error.
+///
+///   When the leaf stage has a Sort already, we verify that the limit doesn't exceed the configured hard limit.
 public class LiteModeSortInsertRule extends PRelOptRule {
   private static final TypeFactory TYPE_FACTORY = new TypeFactory();
   private static final RexBuilder REX_BUILDER = new RexBuilder(TYPE_FACTORY);
@@ -65,8 +61,10 @@ public class LiteModeSortInsertRule extends PRelOptRule {
 
   @Override
   public PRelNode onMatch(PRelOptRuleCall call) {
-    int serverStageLimit = _context.getLiteModeServerStageLimit();
-    RexNode newFetch = REX_BUILDER.makeLiteral(serverStageLimit, TYPE_FACTORY.createSqlType(
+    int numWorkers = call._currentNode.getPinotDataDistributionOrThrow().getWorkers().size();
+    int liteModeLimit = computeLiteModeLimit(_context.getLiteModeLeafStageLimit(),
+        _context.getLiteModeLeafStageFanOutAdjustedLimit(), numWorkers);
+    RexNode newFetch = REX_BUILDER.makeLiteral(liteModeLimit, TYPE_FACTORY.createSqlType(
         SqlTypeName.INTEGER));
     if (call._currentNode instanceof PhysicalSort) {
       // When current node is a Sort, if it has a fetch already, verify it is less than the hard limit. Otherwise,
@@ -74,19 +72,26 @@ public class LiteModeSortInsertRule extends PRelOptRule {
       PhysicalSort sort = (PhysicalSort) call._currentNode;
       if (sort.fetch != null) {
         int currentFetch = RexExpressionUtils.getValueAsInt(sort.fetch);
-        Preconditions.checkState(currentFetch <= serverStageLimit,
+        Preconditions.checkState(currentFetch <= liteModeLimit,
             "Attempted to stream %s records from server which exceed limit %s", currentFetch,
-            serverStageLimit);
+            liteModeLimit);
         return sort;
       }
+      _context.setLiteModeEffectiveSortLimit(liteModeLimit);
       return sort.withFetch(newFetch);
     }
     if (call._currentNode instanceof PhysicalAggregate) {
       // When current node is aggregate, add the limit to the Aggregate itself and skip adding the Sort.
       PhysicalAggregate aggregate = (PhysicalAggregate) call._currentNode;
-      Preconditions.checkState(aggregate.getLimit() <= serverStageLimit,
-          "Group trim limit={} exceeds server stage limit={}", aggregate.getLimit(), serverStageLimit);
-      int limit = aggregate.getLimit() > 0 ? aggregate.getLimit() : serverStageLimit;
+      Preconditions.checkState(aggregate.getLimit() <= liteModeLimit,
+          "Group trim limit={} exceeds server stage limit={}", aggregate.getLimit(), liteModeLimit);
+      int limit;
+      if (aggregate.getLimit() > 0) {
+        limit = aggregate.getLimit();
+      } else {
+        limit = liteModeLimit;
+        _context.setLiteModeEffectiveSortLimit(liteModeLimit);
+      }
       return aggregate.withLimit(limit);
     }
     RelCollation relCollation = RelCollations.EMPTY;
@@ -101,9 +106,17 @@ public class LiteModeSortInsertRule extends PRelOptRule {
       }
     }
     PRelNode input = call._currentNode;
+    _context.setLiteModeEffectiveSortLimit(liteModeLimit);
     return new PhysicalSort(input.unwrap().getCluster(), RelTraitSet.createEmpty(), List.of(),
         relCollation, null /* offset */, newFetch, input, nodeId(), input.getPinotDataDistributionOrThrow(),
         true);
+  }
+
+  private int computeLiteModeLimit(int leafStageLimit, int leafStageFanOutAdjustedLimit, int numWorkers) {
+    if (leafStageFanOutAdjustedLimit <= 0) {
+      return leafStageLimit;
+    }
+    return leafStageFanOutAdjustedLimit / numWorkers;
   }
 
   private int nodeId() {

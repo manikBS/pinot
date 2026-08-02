@@ -19,10 +19,6 @@
 package org.apache.pinot.integration.tests;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import org.apache.helix.model.ExternalView;
@@ -76,14 +72,14 @@ public class HybridClusterIntegrationTest extends BaseHybridClusterIntegrationTe
 
     // Dropping the broker should fail because it is still in the broker resource
     try {
-      sendDeleteRequest(_controllerRequestURLBuilder.forInstance(brokerId));
+      getOrCreateAdminClient().getInstanceClient().dropInstance(brokerId);
       fail("Dropping instance should fail because it is still in the broker resource");
     } catch (Exception e) {
       // Expected
     }
 
     // Untag the broker and update the broker resource so that it is removed from the broker resource
-    sendPutRequest(_controllerRequestURLBuilder.forInstanceUpdateTags(brokerId, Collections.emptyList(), true));
+    getOrCreateAdminClient().getInstanceClient().updateInstanceTags(brokerId, List.of(), true);
 
     // Check if broker is removed from all the tables in broker resource
     brokerResourceIdealState =
@@ -103,7 +99,7 @@ public class HybridClusterIntegrationTest extends BaseHybridClusterIntegrationTe
     }, 60_000L, "Failed to remove broker from broker resource ExternalView");
 
     // Dropping the broker should success now
-    sendDeleteRequest(_controllerRequestURLBuilder.forInstance(brokerId));
+    getOrCreateAdminClient().getInstanceClient().dropInstance(brokerId);
 
     // Check if broker is dropped from the cluster
     assertFalse(_helixAdmin.getInstancesInCluster(clusterName).contains(brokerId));
@@ -112,99 +108,80 @@ public class HybridClusterIntegrationTest extends BaseHybridClusterIntegrationTe
   @Test
   public void testSegmentMetadataApi()
       throws Exception {
+    String offlineTableName = TableNameBuilder.OFFLINE.tableNameWithType(getTableName());
     {
-      String jsonOutputStr = sendGetRequest(_controllerRequestURLBuilder.forSegmentsMetadataFromServer(getTableName()));
+      String jsonOutputStr = getOrCreateAdminClient().getSegmentClient()
+          .getSegmentsMetadata(getTableName(), null, null, TableType.OFFLINE.toString());
       JsonNode tableSegmentsMetadata = JsonUtils.stringToJsonNode(jsonOutputStr);
       Assert.assertEquals(tableSegmentsMetadata.size(), 8);
 
       JsonNode segmentMetadataFromAllEndpoint = tableSegmentsMetadata.elements().next();
       String segmentName = segmentMetadataFromAllEndpoint.get("segmentName").asText();
-      jsonOutputStr = sendGetRequest(_controllerRequestURLBuilder.forSegmentMetadata(getTableName(), segmentName));
-      JsonNode segmentMetadataFromDirectEndpoint = JsonUtils.stringToJsonNode(jsonOutputStr);
+      Map<String, Object> segmentMetadataFromDirectEndpoint = getOrCreateAdminClient().getSegmentClient()
+          .getSegmentMetadata(offlineTableName, segmentName, null);
       Assert.assertEquals(segmentMetadataFromAllEndpoint.get("totalDocs"),
-          segmentMetadataFromDirectEndpoint.get("segment.total.docs"));
+          JsonUtils.objectToJsonNode(segmentMetadataFromDirectEndpoint).get("segment.total.docs"));
     }
     // get list of segment names to pass in query params for following tests
-    List<String> segmentNames = getSegmentNames(getTableName(), TableType.OFFLINE.toString());
-    List<String> segments = new ArrayList<>();
-    for (String segment : segmentNames) {
-      String encodedSegmentName = URLEncoder.encode(segment, StandardCharsets.UTF_8.toString());
-      segments.add(encodedSegmentName);
-    }
+    List<String> segments = getSegmentNames(getTableName(), TableType.OFFLINE.toString());
     // with null column params
     {
-      String jsonOutputStr = sendGetRequest(_controllerRequestURLBuilder.forSegmentsMetadataFromServer(getTableName(),
-          null, segments));
+      String jsonOutputStr = getOrCreateAdminClient().getSegmentClient()
+          .getSegmentsMetadata(getTableName(), null, segments, TableType.OFFLINE.toString());
       JsonNode tableSegmentsMetadata = JsonUtils.stringToJsonNode(jsonOutputStr);
       Assert.assertEquals(tableSegmentsMetadata.size(), segments.size());
       JsonNode segmentMetadataFromAllEndpoint = tableSegmentsMetadata.elements().next();
       String segmentName = segmentMetadataFromAllEndpoint.get("segmentName").asText();
-      jsonOutputStr = sendGetRequest(_controllerRequestURLBuilder.forSegmentMetadata(getTableName(), segmentName));
-      JsonNode segmentMetadataFromDirectEndpoint = JsonUtils.stringToJsonNode(jsonOutputStr);
+      Map<String, Object> segmentMetadataFromDirectEndpoint = getOrCreateAdminClient().getSegmentClient()
+          .getSegmentMetadata(offlineTableName, segmentName, null);
       Assert.assertEquals(segmentMetadataFromAllEndpoint.get("totalDocs"),
-          segmentMetadataFromDirectEndpoint.get("segment.total.docs"));
-      Assert.assertEquals(tableSegmentsMetadata.get(segmentNames.get(0)).get("columns").size(), 0);
+          JsonUtils.objectToJsonNode(segmentMetadataFromDirectEndpoint).get("segment.total.docs"));
+      Assert.assertEquals(tableSegmentsMetadata.get(segments.get(0)).get("columns").size(), 0);
     }
     // with * column param
     {
-      String jsonOutputStr = sendGetRequest(_controllerRequestURLBuilder.forSegmentsMetadataFromServer(getTableName(),
-          List.of("*"), segments));
+      String jsonOutputStr = getOrCreateAdminClient().getSegmentClient()
+          .getSegmentsMetadata(getTableName(), List.of("*"), segments, TableType.OFFLINE.toString());
       JsonNode tableSegmentsMetadata = JsonUtils.stringToJsonNode(jsonOutputStr);
       Assert.assertEquals(tableSegmentsMetadata.size(), segments.size());
       JsonNode segmentMetadataFromAllEndpoint = tableSegmentsMetadata.elements().next();
       String segmentName = segmentMetadataFromAllEndpoint.get("segmentName").asText();
-      jsonOutputStr = sendGetRequest(_controllerRequestURLBuilder.forSegmentMetadata(getTableName(), segmentName));
-      JsonNode segmentMetadataFromDirectEndpoint = JsonUtils.stringToJsonNode(jsonOutputStr);
+      Map<String, Object> segmentMetadataFromDirectEndpoint = getOrCreateAdminClient().getSegmentClient()
+          .getSegmentMetadata(offlineTableName, segmentName, null);
       Assert.assertEquals(segmentMetadataFromAllEndpoint.get("totalDocs"),
-          segmentMetadataFromDirectEndpoint.get("segment.total.docs"));
-      Assert.assertEquals(tableSegmentsMetadata.get(segmentNames.get(0)).get("columns").size(), 79);
+          JsonUtils.objectToJsonNode(segmentMetadataFromDirectEndpoint).get("segment.total.docs"));
+      Assert.assertEquals(tableSegmentsMetadata.get(segments.get(0)).get("columns").size(), 79);
     }
     // with specified column params
     {
       List<String> columns = List.of("Carrier", "FlightNum", "TailNum");
-      String jsonOutputStr = sendGetRequest(_controllerRequestURLBuilder.forSegmentsMetadataFromServer(getTableName(),
-          columns, segments));
+      String jsonOutputStr = getOrCreateAdminClient().getSegmentClient()
+          .getSegmentsMetadata(getTableName(), columns, segments, TableType.OFFLINE.toString());
       JsonNode tableSegmentsMetadata = JsonUtils.stringToJsonNode(jsonOutputStr);
       Assert.assertEquals(tableSegmentsMetadata.size(), segments.size());
       JsonNode segmentMetadataFromAllEndpoint = tableSegmentsMetadata.elements().next();
       String segmentName = segmentMetadataFromAllEndpoint.get("segmentName").asText();
-      jsonOutputStr = sendGetRequest(_controllerRequestURLBuilder.forSegmentMetadata(getTableName(), segmentName));
-      JsonNode segmentMetadataFromDirectEndpoint = JsonUtils.stringToJsonNode(jsonOutputStr);
+      Map<String, Object> segmentMetadataFromDirectEndpoint = getOrCreateAdminClient().getSegmentClient()
+          .getSegmentMetadata(offlineTableName, segmentName, null);
       Assert.assertEquals(segmentMetadataFromAllEndpoint.get("totalDocs"),
-          segmentMetadataFromDirectEndpoint.get("segment.total.docs"));
-      Assert.assertEquals(tableSegmentsMetadata.get(segmentNames.get(0)).get("columns").size(), columns.size());
+          JsonUtils.objectToJsonNode(segmentMetadataFromDirectEndpoint).get("segment.total.docs"));
+      Assert.assertEquals(tableSegmentsMetadata.get(segments.get(0)).get("columns").size(), columns.size());
     }
   }
 
   @Test
   public void testSegmentListApi()
       throws Exception {
-    {
-      String jsonOutputStr =
-          sendGetRequest(_controllerRequestURLBuilder.forSegmentListAPI(getTableName(), TableType.OFFLINE.toString()));
-      JsonNode array = JsonUtils.stringToJsonNode(jsonOutputStr);
-      // There should be one element in the array
-      JsonNode element = array.get(0);
-      JsonNode segments = element.get("OFFLINE");
-      Assert.assertEquals(segments.size(), 8);
-    }
-    {
-      String jsonOutputStr =
-          sendGetRequest(_controllerRequestURLBuilder.forSegmentListAPI(getTableName(), TableType.REALTIME.toString()));
-      JsonNode array = JsonUtils.stringToJsonNode(jsonOutputStr);
-      // There should be one element in the array
-      JsonNode element = array.get(0);
-      JsonNode segments = element.get("REALTIME");
-      Assert.assertEquals(segments.size(), 24);
-    }
-    {
-      String jsonOutputStr = sendGetRequest(_controllerRequestURLBuilder.forSegmentListAPI(getTableName()));
-      JsonNode array = JsonUtils.stringToJsonNode(jsonOutputStr);
-      JsonNode offlineSegments = array.get(0).get("OFFLINE");
-      Assert.assertEquals(offlineSegments.size(), 8);
-      JsonNode realtimeSegments = array.get(1).get("REALTIME");
-      Assert.assertEquals(realtimeSegments.size(), 24);
-    }
+    List<String> offlineSegments =
+        getOrCreateAdminClient().getSegmentClient().listSegments(getTableName(), TableType.OFFLINE.toString(), false);
+    Assert.assertEquals(offlineSegments.size(), 8);
+
+    List<String> realtimeSegments =
+        getOrCreateAdminClient().getSegmentClient().listSegments(getTableName(), TableType.REALTIME.toString(), false);
+    Assert.assertEquals(realtimeSegments.size(), 24);
+
+    Assert.assertEquals(offlineSegments.size(), 8);
+    Assert.assertEquals(realtimeSegments.size(), 24);
   }
 
   // NOTE: Reload consuming segment will force commit it, so run this test after segment list api test
@@ -397,6 +374,13 @@ public class HybridClusterIntegrationTest extends BaseHybridClusterIntegrationTe
       QueryAssert.assertThat(response).firstException().hasErrorCode(QueryErrorCode.BROKER_RESOURCE_MISSING)
           .containsMessage("BrokerResourceMissingError");
     }
+  }
+
+  @Test
+  @Override
+  public void testQueriesDisabled()
+      throws Exception {
+    super.testQueriesDisabled();
   }
 
   @Test

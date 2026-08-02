@@ -50,7 +50,6 @@ import org.apache.pinot.core.query.request.context.QueryContext;
 import org.apache.pinot.core.query.request.context.utils.QueryContextConverterUtils;
 import org.apache.pinot.core.query.utils.OrderByComparatorFactory;
 import org.apache.pinot.core.util.GroupByUtils;
-import org.apache.pinot.spi.trace.Tracing;
 import org.apache.pinot.spi.utils.CommonConstants.Server;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
@@ -110,7 +109,7 @@ public class BenchmarkPairwiseCombineOrderByGroupBy {
     // create data
     Set<String> d1 = new HashSet<>(CARDINALITY_D1);
     while (d1.size() < CARDINALITY_D1) {
-      d1.add(RandomStringUtils.randomAlphabetic(3));
+      d1.add(RandomStringUtils.secure().nextAlphabetic(3));
     }
     _d1 = new ArrayList<>(CARDINALITY_D1);
     _d1.addAll(d1);
@@ -262,7 +261,6 @@ public class BenchmarkPairwiseCombineOrderByGroupBy {
       GroupByResultsBlock resultsBlock = new GroupByResultsBlock(_dataSchema,
           _segmentIntermediateRecords.get(segmentId), _queryContext);
       records = mergeRecords(records, resultsBlock);
-      Tracing.ThreadAccountantOps.sampleAndCheckInterruption();
     }
 
     SortedRecordTable table =
@@ -285,7 +283,6 @@ public class BenchmarkPairwiseCombineOrderByGroupBy {
         }
         // if found waiting block, merge and loop
         records = mergeRecords(records, waitingRecords);
-        Tracing.ThreadAccountantOps.sampleAndCheckInterruption();
       }
     }
   }
@@ -295,7 +292,6 @@ public class BenchmarkPairwiseCombineOrderByGroupBy {
     Record[] records = new Record[_segmentIntermediateRecords.size()];
     for (IntermediateRecord intermediateRecord : _segmentIntermediateRecords.get(segmentId)) {
       records[mergedKeys++] = intermediateRecord._record;
-      Tracing.ThreadAccountantOps.sampleAndCheckInterruptionPeriodically(mergedKeys);
     }
     return new SortedRecords(records, records.length);
   }

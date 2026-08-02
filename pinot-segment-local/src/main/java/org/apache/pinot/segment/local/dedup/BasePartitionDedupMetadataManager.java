@@ -52,7 +52,8 @@ import org.slf4j.LoggerFactory;
 
 public abstract class BasePartitionDedupMetadataManager implements PartitionDedupMetadataManager {
   // The special value to indicate the largest seen time is not set yet, assuming times are positive.
-  protected static final double TTL_WATERMARK_NOT_SET = 0;
+  public static final double TTL_WATERMARK_NOT_SET = 0;
+
   protected final String _tableNameWithType;
   protected final List<String> _primaryKeyColumns;
   protected final int _partitionId;
@@ -272,13 +273,11 @@ public abstract class BasePartitionDedupMetadataManager implements PartitionDedu
     }
   }
 
-  /**
-   * Adds the dedup metadata for the new segment if old segment is null; or replaces the dedup metadata for the given
-   * old segment with the new segment if the old segment is not null.
-   * @param oldSegment The old segment to replace. If null, add the new segment.
-   * @param newSegment The new segment to add or replace.
-   * @param dedupRecordInfoIteratorOfNewSegment The iterator of dedup record info of the new segment.
-   */
+  /// Adds the dedup metadata for the new segment if old segment is null; or replaces the dedup metadata for the given
+  /// old segment with the new segment if the old segment is not null.
+  /// @param oldSegment The old segment to replace. If null, add the new segment.
+  /// @param newSegment The new segment to add or replace.
+  /// @param dedupRecordInfoIteratorOfNewSegment The iterator of dedup record info of the new segment.
   protected abstract void doAddOrReplaceSegment(@Nullable IndexSegment oldSegment, IndexSegment newSegment,
       Iterator<DedupRecordInfo> dedupRecordInfoIteratorOfNewSegment);
 
@@ -351,9 +350,7 @@ public abstract class BasePartitionDedupMetadataManager implements PartitionDedu
     }
   }
 
-  /**
-   * Removes all primary keys that have dedup time smaller than (largestSeenDedupTime - TTL).
-   */
+  /// Removes all primary keys that have dedup time smaller than (largestSeenDedupTime - TTL).
   protected abstract void doRemoveExpiredPrimaryKeys();
 
   protected synchronized boolean startOperation() {

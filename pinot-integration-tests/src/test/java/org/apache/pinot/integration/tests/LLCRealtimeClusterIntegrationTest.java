@@ -24,7 +24,6 @@ import java.net.URI;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -46,8 +45,8 @@ import org.apache.pinot.common.utils.LLCSegmentName;
 import org.apache.pinot.controller.ControllerConf;
 import org.apache.pinot.controller.helix.core.controllerjob.ControllerJobTypes;
 import org.apache.pinot.plugin.stream.kafka.KafkaMessageBatch;
-import org.apache.pinot.plugin.stream.kafka20.KafkaConsumerFactory;
-import org.apache.pinot.plugin.stream.kafka20.KafkaPartitionLevelConsumer;
+import org.apache.pinot.plugin.stream.kafka30.KafkaConsumerFactory;
+import org.apache.pinot.plugin.stream.kafka30.KafkaPartitionLevelConsumer;
 import org.apache.pinot.segment.spi.index.StandardIndexes;
 import org.apache.pinot.spi.config.table.IndexingConfig;
 import org.apache.pinot.spi.config.table.TableConfig;
@@ -65,6 +64,7 @@ import org.apache.pinot.spi.utils.CommonConstants;
 import org.apache.pinot.spi.utils.JsonUtils;
 import org.apache.pinot.spi.utils.ReadMode;
 import org.apache.pinot.spi.utils.builder.TableNameBuilder;
+import org.apache.pinot.spi.utils.retry.RetryPolicy;
 import org.apache.pinot.util.TestUtils;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
@@ -76,10 +76,8 @@ import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
 
 
-/**
- * Integration test for low-level Kafka consumer.
- * TODO: Add separate module-level tests and remove the randomness of this test
- */
+/// Integration test for low-level Kafka consumer.
+/// TODO: Add separate module-level tests and remove the randomness of this test
 public class LLCRealtimeClusterIntegrationTest extends BaseRealtimeClusterIntegrationTest {
   private static final String CONSUMER_DIRECTORY = "/tmp/consumer-test";
   private static final long RANDOM_SEED = System.currentTimeMillis();
@@ -139,9 +137,8 @@ public class LLCRealtimeClusterIntegrationTest extends BaseRealtimeClusterIntegr
         continue;
       }
       TestUtils.waitForCondition(() -> isOffline(partition, seqNum), 5000L, timeoutMs,
-          "Failed to find offline segment in partition " + partition + " seqNum ", true,
-          Duration.ofMillis(timeoutMs / 10));
-      getControllerRequestClient().runPeriodicTask("RealtimeSegmentValidationManager");
+          "Failed to find offline segment in partition " + partition + " seqNum ", Duration.ofMillis(timeoutMs / 10));
+      getOrCreateAdminClient().getClusterClient().runPeriodicTask("RealtimeSegmentValidationManager");
     }
   }
 
@@ -176,7 +173,7 @@ public class LLCRealtimeClusterIntegrationTest extends BaseRealtimeClusterIntegr
   protected IngestionConfig getIngestionConfig() {
     IngestionConfig ingestionConfig = new IngestionConfig();
     ingestionConfig.setStreamIngestionConfig(
-        new StreamIngestionConfig(Collections.singletonList(getStreamConfigMap())));
+        new StreamIngestionConfig(List.of(getStreamConfigMap())));
     return ingestionConfig;
   }
 
@@ -221,7 +218,7 @@ public class LLCRealtimeClusterIntegrationTest extends BaseRealtimeClusterIntegr
     if (onlyFirstSegment) {
       numSegments = 1;
     }
-    URI uploadSegmentHttpURI = URI.create(getControllerRequestURLBuilder().forSegmentUpload());
+    URI uploadSegmentHttpURI = URI.create(getOrCreateAdminClient().getSegmentUploadUrl());
     try (FileUploadDownloadClient fileUploadDownloadClient = new FileUploadDownloadClient()) {
       if (numSegments == 1) {
         File segmentTarFile = segmentTarFiles[0];
@@ -441,16 +438,14 @@ public class LLCRealtimeClusterIntegrationTest extends BaseRealtimeClusterIntegr
 
   private String forceCommit(String tableName)
       throws Exception {
-    String response = sendPostRequest(_controllerRequestURLBuilder.forTableForceCommit(tableName), null);
+    String response = getOrCreateAdminClient().getTableClient().forceCommit(tableName);
     return JsonUtils.stringToJsonNode(response).get("forceCommitJobId").asText();
   }
 
   private String forceCommit(String tableName, int batchSize, int batchIntervalSec, int batchTimeoutSec)
       throws Exception {
-    String response = sendPostRequest(
-        _controllerRequestURLBuilder.forTableForceCommit(tableName) + "?batchSize=" + batchSize
-            + "&batchStatusCheckIntervalSec=" + batchIntervalSec + "&batchStatusCheckTimeoutSec=" + batchTimeoutSec,
-        null);
+    String response = getOrCreateAdminClient().getTableClient()
+        .forceCommit(tableName, batchSize, batchIntervalSec, batchTimeoutSec);
     return JsonUtils.stringToJsonNode(response).get("forceCommitJobId").asText();
   }
 
@@ -481,7 +476,7 @@ public class LLCRealtimeClusterIntegrationTest extends BaseRealtimeClusterIntegr
 
   public boolean isForceCommitJobCompleted(String forceCommitJobId)
       throws Exception {
-    String jobStatusResponse = sendGetRequest(_controllerRequestURLBuilder.forForceCommitJobStatus(forceCommitJobId));
+    String jobStatusResponse = getOrCreateAdminClient().getTableClient().getForceCommitJobStatus(forceCommitJobId);
     JsonNode jobStatus = JsonUtils.stringToJsonNode(jobStatusResponse);
 
     assertEquals(jobStatus.get("jobId").asText(), forceCommitJobId);
@@ -549,6 +544,12 @@ public class LLCRealtimeClusterIntegrationTest extends BaseRealtimeClusterIntegr
         }
       }
       return new ExceptingKafkaConsumer(clientId, _streamConfig, partition, exceptionDuringConsume);
+    }
+
+    @Override
+    public PartitionGroupConsumer createPartitionGroupConsumer(String clientId,
+        PartitionGroupConsumptionStatus partitionGroupConsumptionStatus, RetryPolicy retryPolicy) {
+      return createPartitionGroupConsumer(clientId, partitionGroupConsumptionStatus);
     }
 
     private int getSegmentSeqNum(int partition) {

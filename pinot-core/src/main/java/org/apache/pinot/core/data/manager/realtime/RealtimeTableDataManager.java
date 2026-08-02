@@ -20,23 +20,26 @@ package org.apache.pinot.core.data.manager.realtime;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.RemovalNotification;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
+import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.Lock;
 import java.util.function.BooleanSupplier;
-import java.util.function.Supplier;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 import org.apache.commons.collections4.CollectionUtils;
@@ -46,13 +49,11 @@ import org.apache.commons.lang3.tuple.Pair;
 import org.apache.pinot.common.Utils;
 import org.apache.pinot.common.metadata.segment.SegmentZKMetadata;
 import org.apache.pinot.common.metrics.ServerGauge;
+import org.apache.pinot.common.metrics.ServerMetrics;
 import org.apache.pinot.common.restlet.resources.SegmentErrorInfo;
 import org.apache.pinot.common.utils.LLCSegmentName;
 import org.apache.pinot.common.utils.SegmentUtils;
-import org.apache.pinot.common.utils.config.QueryOptionsUtils;
 import org.apache.pinot.core.data.manager.BaseTableDataManager;
-import org.apache.pinot.core.data.manager.DuoSegmentDataManager;
-import org.apache.pinot.core.data.manager.offline.ImmutableSegmentDataManager;
 import org.apache.pinot.core.util.PeerServerSegmentFinder;
 import org.apache.pinot.segment.local.data.manager.SegmentDataManager;
 import org.apache.pinot.segment.local.dedup.PartitionDedupMetadataManager;
@@ -64,15 +65,11 @@ import org.apache.pinot.segment.local.realtime.impl.RealtimeSegmentStatsHistory;
 import org.apache.pinot.segment.local.segment.index.loader.IndexLoadingConfig;
 import org.apache.pinot.segment.local.segment.virtualcolumn.VirtualColumnProviderFactory;
 import org.apache.pinot.segment.local.upsert.PartitionUpsertMetadataManager;
-import org.apache.pinot.segment.local.upsert.TableUpsertMetadataManager;
 import org.apache.pinot.segment.local.upsert.TableUpsertMetadataManagerFactory;
 import org.apache.pinot.segment.local.utils.SchemaUtils;
 import org.apache.pinot.segment.local.utils.tablestate.TableStateUtils;
 import org.apache.pinot.segment.spi.ImmutableSegment;
 import org.apache.pinot.segment.spi.IndexSegment;
-import org.apache.pinot.segment.spi.SegmentContext;
-import org.apache.pinot.segment.spi.SegmentMetadata;
-import org.apache.pinot.segment.spi.index.metadata.SegmentMetadataImpl;
 import org.apache.pinot.spi.config.table.IndexingConfig;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.UpsertConfig;
@@ -83,7 +80,7 @@ import org.apache.pinot.spi.data.DateTimeFormatSpec;
 import org.apache.pinot.spi.data.FieldSpec;
 import org.apache.pinot.spi.data.Schema;
 import org.apache.pinot.spi.stream.StreamConfigProperties;
-import org.apache.pinot.spi.stream.StreamMessageMetadata;
+import org.apache.pinot.spi.stream.StreamConsumerFactory;
 import org.apache.pinot.spi.stream.StreamMetadataProvider;
 import org.apache.pinot.spi.stream.StreamPartitionMsgOffset;
 import org.apache.pinot.spi.utils.CommonConstants;
@@ -135,36 +132,52 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
   public static final long SLEEP_INTERVAL_MS = 30000; // 30 seconds sleep interval
   @Deprecated
   private static final String SEGMENT_DOWNLOAD_TIMEOUT_MINUTES = "segmentDownloadTimeoutMinutes";
+  private static final Duration STREAM_METADATA_PROVIDER_CACHE_TTL = Duration.ofMinutes(10);
 
-  // TODO: Change it to BooleanSupplier
-  private final Supplier<Boolean> _isServerReadyToServeQueries;
+  protected Cache<String, StreamMetadataProvider> _streamMetadataProviderCache;
+
+  private final BooleanSupplier _isServerReadyToConsumeData;
+  private final BooleanSupplier _isServerReadyToServeQueries;
+  private final ServerIngestionOomProtectionManager.ServerThrottleState _serverIngestionOomProtectionThrottleState;
 
   // Object to track ingestion delay for all partitions
   private IngestionDelayTracker _ingestionDelayTracker;
 
   private TableDedupMetadataManager _tableDedupMetadataManager;
-  private TableUpsertMetadataManager _tableUpsertMetadataManager;
   private BooleanSupplier _isTableReadyToConsumeData;
+  private ServerIngestionOomProtectionManager _serverIngestionOomProtectionManager;
   private boolean _enforceConsumptionInOrder = false;
 
   public RealtimeTableDataManager(Semaphore segmentBuildSemaphore) {
     this(segmentBuildSemaphore, () -> true);
   }
 
-  public RealtimeTableDataManager(Semaphore segmentBuildSemaphore, Supplier<Boolean> isServerReadyToServeQueries) {
+  public RealtimeTableDataManager(Semaphore segmentBuildSemaphore, BooleanSupplier isServerReadyToServeQueries) {
+    this(segmentBuildSemaphore, () -> true, isServerReadyToServeQueries,
+        // Test/legacy: per-instance non-shared unregistered throttle; ignores cluster config; prod uses startup state.
+        ServerIngestionOomProtectionManager.createServerThrottleState(null, ServerMetrics.get()));
+  }
+
+  /// @param isServerReadyToConsumeData returns `false` when consuming-segment ingestion should be held off
+  ///     (e.g. while the server is still draining startup-time work). Each consuming segment checks this gate at the
+  ///     entry of its consumer thread; once the gate clears, it is not consulted again for that segment.
+  public RealtimeTableDataManager(Semaphore segmentBuildSemaphore, BooleanSupplier isServerReadyToConsumeData,
+      BooleanSupplier isServerReadyToServeQueries,
+      ServerIngestionOomProtectionManager.ServerThrottleState serverIngestionOomProtectionThrottleState) {
     _segmentBuildSemaphore = segmentBuildSemaphore;
+    _isServerReadyToConsumeData = isServerReadyToConsumeData;
     _isServerReadyToServeQueries = isServerReadyToServeQueries;
+    _serverIngestionOomProtectionThrottleState = serverIngestionOomProtectionThrottleState;
   }
 
   @Override
   protected void doInit() {
     _leaseExtender = SegmentBuildTimeLeaseExtender.getOrCreate(_instanceId, _serverMetrics, _tableNameWithType);
     // Tracks ingestion delay of all partitions being served for this table
-    _ingestionDelayTracker =
-        new IngestionDelayTracker(_serverMetrics, _tableNameWithType, this, _isServerReadyToServeQueries);
+    _ingestionDelayTracker = new IngestionDelayTracker(_serverMetrics, _tableNameWithType, this);
     File statsFile = new File(_tableDataDir, STATS_FILE_NAME);
     try {
-      _statsHistory = RealtimeSegmentStatsHistory.deserialzeFrom(statsFile);
+      _statsHistory = RealtimeSegmentStatsHistory.deserializeFrom(statsFile);
     } catch (IOException | ClassNotFoundException e) {
       _logger.error("Caught exception while reading stats history from: {}", statsFile.getAbsolutePath(), e);
       File savedFile = new File(_tableDataDir, STATS_FILE_NAME + "." + UUID.randomUUID());
@@ -177,7 +190,7 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
       _logger.warn("Saved unreadable {} into {}. Creating a fresh instance", statsFile.getAbsolutePath(),
           savedFile.getAbsolutePath());
       try {
-        _statsHistory = RealtimeSegmentStatsHistory.deserialzeFrom(statsFile);
+        _statsHistory = RealtimeSegmentStatsHistory.deserializeFrom(statsFile);
       } catch (Exception e2) {
         Utils.rethrowException(e2);
       }
@@ -209,21 +222,23 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     if (tableConfig.isDedupEnabled()) {
       _tableDedupMetadataManager =
           TableDedupMetadataManagerFactory.create(_instanceDataManagerConfig.getDedupConfig(), tableConfig, schema,
-              this, _segmentOperationsThrottler);
+              this, _segmentOperationsThrottlerSet);
     }
     if (tableConfig.isUpsertEnabled()) {
       Preconditions.checkState(_tableDedupMetadataManager == null,
           "Dedup and upsert cannot be both enabled for table: %s", _tableNameWithType);
       _tableUpsertMetadataManager =
           TableUpsertMetadataManagerFactory.create(_instanceDataManagerConfig.getUpsertConfig(), tableConfig, schema,
-              this, _segmentOperationsThrottler);
+              this, _segmentOperationsThrottlerSet);
     }
 
     _enforceConsumptionInOrder = isEnforceConsumptionInOrder();
+    _streamMetadataProviderCache = getStreamMetadataProviderCache();
 
     // For dedup and partial-upsert, need to wait for all segments loaded before starting consuming data
+    BooleanSupplier readyForDedupOrPartialUpsert;
     if (isDedupEnabled() || isPartialUpsertEnabled()) {
-      _isTableReadyToConsumeData = new BooleanSupplier() {
+      readyForDedupOrPartialUpsert = new BooleanSupplier() {
         volatile boolean _allSegmentsLoaded;
         long _lastCheckTimeMs;
 
@@ -248,8 +263,30 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
         }
       };
     } else {
-      _isTableReadyToConsumeData = () -> true;
+      readyForDedupOrPartialUpsert = () -> true;
     }
+    _isTableReadyToConsumeData = () -> readyForDedupOrPartialUpsert.getAsBoolean()
+        && _isServerReadyToConsumeData.getAsBoolean();
+    _serverIngestionOomProtectionManager = new ServerIngestionOomProtectionManager(
+        () -> getCachedTableConfigAndSchema().getLeft(), () -> isUpsertEnabled() || isDedupEnabled(),
+        _serverIngestionOomProtectionThrottleState);
+  }
+
+  @VisibleForTesting
+  protected Cache<String, StreamMetadataProvider> getStreamMetadataProviderCache() {
+    return CacheBuilder.newBuilder()
+        .expireAfterAccess(STREAM_METADATA_PROVIDER_CACHE_TTL)
+        .removalListener((RemovalNotification<String, StreamMetadataProvider> notification) -> {
+          StreamMetadataProvider provider = notification.getValue();
+          if (provider != null) {
+            try {
+              provider.close();
+            } catch (Exception e) {
+              LOGGER.warn("Failed to close StreamMetadataProvider for key {}", notification.getKey(), e);
+            }
+          }
+        })
+        .build();
   }
 
   @Override
@@ -288,81 +325,72 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     }
   }
 
-  /**
-   * Updates the ingestion metrics for the given partition.
-   *
-   * @param segmentName name of the consuming segment
-   * @param partitionId partition id of the consuming segment (directly passed in to avoid parsing the segment name)
-   * @param ingestionTimeMs ingestion time of the last consumed message (from {@link StreamMessageMetadata})
-   * @param firstStreamIngestionTimeMs ingestion time of the last consumed message in the first stream (from
-   *                                   {@link StreamMessageMetadata})
-   * @param currentOffset offset of the last consumed message (from {@link StreamMessageMetadata})
-   * @param latestOffset offset of the latest message in the partition (from {@link StreamMetadataProvider})
-   */
+  /// Updates the ingestion metrics for the given partition.
+  ///
+  /// @param segmentName                      name of the consuming segment
+  /// @param partitionId                      partition id of the consuming segment (directly passed in to avoid parsing
+  ///                                         the segment name)
+  /// @param ingestionTimeMs                  ingestion time of the last consumed message (from
+  ///                                         [org.apache.pinot.spi.stream.StreamMessageMetadata])
+  /// @param firstStreamIngestionTimeMs ingestion time of the last consumed message in the first stream (from
+  /// [org.apache.pinot.spi.stream.StreamMessageMetadata])
+  /// @param currentOffset                    offset of the last consumed message (from
+  ///                                         [org.apache.pinot.spi.stream.StreamMessageMetadata])
   public void updateIngestionMetrics(String segmentName, int partitionId, long ingestionTimeMs,
-      long firstStreamIngestionTimeMs, @Nullable StreamPartitionMsgOffset currentOffset,
-      @Nullable StreamPartitionMsgOffset latestOffset) {
-    _ingestionDelayTracker.updateIngestionMetrics(segmentName, partitionId, ingestionTimeMs, firstStreamIngestionTimeMs,
-        currentOffset, latestOffset);
+      long firstStreamIngestionTimeMs, @Nullable StreamPartitionMsgOffset currentOffset) {
+    _ingestionDelayTracker.updateMetrics(segmentName, partitionId, ingestionTimeMs, firstStreamIngestionTimeMs,
+        currentOffset);
   }
 
-  /**
-   * Returns the ingestion time of the last consumed message for the partition of the given segment. Returns
-   * {@code Long.MIN_VALUE} when it is not available.
-   */
+  /// Returns the ingestion time of the last consumed message for the partition of the given segment. Returns
+  /// `Long.MIN_VALUE` when it is not available.
   public long getPartitionIngestionTimeMs(String segmentName) {
     return _ingestionDelayTracker.getPartitionIngestionTimeMs(new LLCSegmentName(segmentName).getPartitionGroupId());
   }
 
-  /**
-   * Removes the ingestion metrics for the partition of the given segment, and also ignores the updates from the given
-   * segment. This is useful when we want to stop tracking the ingestion delay for a partition when the segment might
-   * still be consuming, e.g. when the new consuming segment is created on a different server.
-   */
+  /// Removes the ingestion metrics for the partition of the given segment, and also ignores the updates from the given
+  /// segment. This is useful when we want to stop tracking the ingestion delay for a partition when the segment might
+  /// still be consuming, e.g. when the new consuming segment is created on a different server.
   public void removeIngestionMetrics(String segmentName) {
-    _ingestionDelayTracker.stopTrackingPartitionIngestionDelay(segmentName);
+    _ingestionDelayTracker.stopTrackingPartition(segmentName);
   }
 
-  /**
-   * Method to handle CONSUMING -> DROPPED segment state transitions:
-   * We stop tracking partitions whose segments are dropped.
-   *
-   * @param segmentName name of segment which is transitioning state.
-   */
+  /// Method to handle CONSUMING -> DROPPED segment state transitions:
+  /// We stop tracking partitions whose segments are dropped.
+  ///
+  /// @param segmentName name of segment which is transitioning state.
   @Override
   public void onConsumingToDropped(String segmentName) {
     // NOTE: No need to mark segment ignored here because it should have already been dropped.
-    _ingestionDelayTracker.stopTrackingPartitionIngestionDelay(new LLCSegmentName(segmentName).getPartitionGroupId());
+    _ingestionDelayTracker.stopTrackingPartition(new LLCSegmentName(segmentName).getPartitionGroupId());
   }
 
-  /**
-   * Method to handle CONSUMING -> OFFLINE segment state transitions:
-   * We stop tracking partitions whose segments are going OFFLINE. The reason is that offline segments are not queried.
-   * So ingestion delay for the offline replicas are not relevant. If there are more replicas with offline state,
-   * replica up metric will determine the severity of the issue.
-   *
-   * @param segmentName name of segment for which the state change is being handled
-   */
+  /// Method to handle CONSUMING -> OFFLINE segment state transitions:
+  /// We stop tracking partitions whose segments are going OFFLINE. The reason is that offline segments are not queried.
+  /// So ingestion delay for the offline replicas are not relevant. If there are more replicas with offline state,
+  /// replica up metric will determine the severity of the issue.
+  ///
+  /// @param segmentName name of segment for which the state change is being handled
   @Override
   public void onConsumingToOffline(String segmentName) {
-    _ingestionDelayTracker.stopTrackingPartitionIngestionDelay(segmentName);
+    _ingestionDelayTracker.stopTrackingPartition(segmentName);
   }
 
-  @Override
-  public List<SegmentContext> getSegmentContexts(List<IndexSegment> selectedSegments,
-      Map<String, String> queryOptions) {
-    List<SegmentContext> segmentContexts = new ArrayList<>(selectedSegments.size());
-    selectedSegments.forEach(s -> segmentContexts.add(new SegmentContext(s)));
-    if (isUpsertEnabled() && !QueryOptionsUtils.isSkipUpsert(queryOptions)) {
-      _tableUpsertMetadataManager.setSegmentContexts(segmentContexts, queryOptions);
+  /// Returns thread safe StreamMetadataProvider which is shared across different callers.
+  public StreamMetadataProvider getStreamMetadataProvider(RealtimeSegmentDataManager realtimeSegmentDataManager) {
+    String tableStreamName = realtimeSegmentDataManager.getTableStreamName();
+    StreamConsumerFactory streamConsumerFactory = realtimeSegmentDataManager.getStreamConsumerFactory();
+    try {
+      return _streamMetadataProviderCache.get(tableStreamName,
+          () -> streamConsumerFactory.createStreamMetadataProvider(tableStreamName, true));
+    } catch (ExecutionException e) {
+      LOGGER.error("Failed to get stream metadata provider for tableStream: {}", tableStreamName);
+      throw new RuntimeException(e);
     }
-    return segmentContexts;
   }
 
-  /**
-   * Returns all partitionGroupIds for the partitions hosted by this server for current table.
-   * @apiNote this involves Zookeeper read and should not be used frequently due to efficiency concerns.
-   */
+  /// Returns all partitionGroupIds for the partitions hosted by this server for current table.
+  /// @apiNote this involves Zookeeper read and should not be used frequently due to efficiency concerns.
   public Set<Integer> getHostedPartitionsGroupIds() {
     Set<Integer> partitionsHostedByThisServer = new HashSet<>();
     List<String> segments = TableStateUtils.getSegmentsInGivenStateForThisInstance(_helixManager, _tableNameWithType,
@@ -411,10 +439,6 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     return _tableDedupMetadataManager != null;
   }
 
-  public boolean isUpsertEnabled() {
-    return _tableUpsertMetadataManager != null;
-  }
-
   public boolean isPartialUpsertEnabled() {
     return _tableUpsertMetadataManager != null
         && _tableUpsertMetadataManager.getContext().getUpsertMode() == UpsertConfig.Mode.PARTIAL;
@@ -429,9 +453,7 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     handleDedupPreload(zkMetadata, indexLoadingConfig);
   }
 
-  /**
-   * Handles upsert preload if the upsert preload is enabled.
-   */
+  /// Handles upsert preload if the upsert preload is enabled.
   private void handleUpsertPreload(SegmentZKMetadata zkMetadata, IndexLoadingConfig indexLoadingConfig) {
     if (_tableUpsertMetadataManager == null || !_tableUpsertMetadataManager.getContext().isPreloadEnabled()) {
       return;
@@ -443,9 +465,7 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     _tableUpsertMetadataManager.getOrCreatePartitionManager(partitionId).preloadSegments(indexLoadingConfig);
   }
 
-  /**
-   * Handles dedup preload if the dedup preload is enabled.
-   */
+  /// Handles dedup preload if the dedup preload is enabled.
   private void handleDedupPreload(SegmentZKMetadata zkMetadata, IndexLoadingConfig indexLoadingConfig) {
     if (_tableDedupMetadataManager == null || !_tableDedupMetadataManager.getContext().isPreloadEnabled()) {
       return;
@@ -511,10 +531,10 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
 
   public Set<Integer> stopTrackingPartitionIngestionDelay(@Nullable Set<Integer> partitionIds) {
     if (CollectionUtils.isEmpty(partitionIds)) {
-      return _ingestionDelayTracker.stopTrackingIngestionDelayForAllPartitions();
+      return _ingestionDelayTracker.stopTrackingAllPartitions();
     }
     for (Integer partitionId: partitionIds) {
-      _ingestionDelayTracker.stopTrackingPartitionIngestionDelay(partitionId);
+      _ingestionDelayTracker.stopTrackingPartition(partitionId);
     }
     return partitionIds;
   }
@@ -588,8 +608,6 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
       throws Exception {
     Status status = zkMetadata.getStatus();
     if (status.isCompleted()) {
-      // Segment is completed and ready to be downloaded either from deep storage or from a peer (if peer-to-peer
-      // download is enabled).
       return super.downloadSegment(zkMetadata);
     }
 
@@ -665,10 +683,8 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
         partitionDedupMetadataManager, isTableReadyToConsumeData);
   }
 
-  /**
-   * Sets the default time value in the schema as the segment creation time if it is invalid. Time column is used to
-   * manage the segments, so its values have to be within the valid range.
-   */
+  /// Sets the default time value in the schema as the segment creation time if it is invalid. Time column is used to
+  /// manage the segments, so its values have to be within the valid range.
   @VisibleForTesting
   static void setDefaultTimeValueIfInvalid(TableConfig tableConfig, Schema schema, SegmentZKMetadata zkMetadata) {
     String timeColumnName = tableConfig.getValidationConfig().getTimeColumnName();
@@ -742,107 +758,7 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     }
   }
 
-  private void handleUpsert(ImmutableSegment immutableSegment, @Nullable SegmentZKMetadata zkMetadata) {
-    String segmentName = immutableSegment.getSegmentName();
-    _logger.info("Adding immutable segment: {} with upsert enabled", segmentName);
-
-    // Set the ZK creation time so that same creation time can be used to break the comparison ties across replicas,
-    // to ensure data consistency of replica.
-    setZkCreationTimeIfAvailable(immutableSegment, zkMetadata);
-
-    Integer partitionId = SegmentUtils.getSegmentPartitionId(segmentName, _tableNameWithType, _helixManager, null);
-    Preconditions.checkNotNull(partitionId, "Failed to get partition id for segment: " + segmentName
-        + " (upsert-enabled table: " + _tableNameWithType + ")");
-    PartitionUpsertMetadataManager partitionUpsertMetadataManager =
-        _tableUpsertMetadataManager.getOrCreatePartitionManager(partitionId);
-
-    _serverMetrics.addValueToTableGauge(_tableNameWithType, ServerGauge.DOCUMENT_COUNT,
-        immutableSegment.getSegmentMetadata().getTotalDocs());
-    _serverMetrics.addValueToTableGauge(_tableNameWithType, ServerGauge.SEGMENT_COUNT, 1L);
-    ImmutableSegmentDataManager newSegmentManager = new ImmutableSegmentDataManager(immutableSegment);
-    if (partitionUpsertMetadataManager.isPreloading()) {
-      // Register segment after it is preloaded and has initialized its validDocIds. The order of preloading and
-      // registering segment doesn't matter much as preloading happens before table partition is ready for queries.
-      partitionUpsertMetadataManager.preloadSegment(immutableSegment);
-      registerSegment(segmentName, newSegmentManager, partitionUpsertMetadataManager);
-      _logger.info("Preloaded immutable segment: {} with upsert enabled", segmentName);
-      return;
-    }
-    SegmentDataManager oldSegmentManager = _segmentDataManagerMap.get(segmentName);
-    if (oldSegmentManager == null) {
-      // When adding a new segment, we should register it 'before' it is fully initialized by
-      // partitionUpsertMetadataManager. Because when processing docs in the new segment, the docs in the other
-      // segments may be invalidated, making the queries see less valid docs than expected. We should let query
-      // access the new segment asap even though its validDocId bitmap is still being filled by
-      // partitionUpsertMetadataManager.
-      registerSegment(segmentName, newSegmentManager, partitionUpsertMetadataManager);
-      partitionUpsertMetadataManager.trackNewlyAddedSegment(segmentName);
-      partitionUpsertMetadataManager.addSegment(immutableSegment);
-      _logger.info("Added new immutable segment: {} with upsert enabled", segmentName);
-    } else {
-      replaceUpsertSegment(segmentName, oldSegmentManager, newSegmentManager, partitionUpsertMetadataManager);
-    }
-  }
-
-  private void replaceUpsertSegment(String segmentName, SegmentDataManager oldSegmentManager,
-      ImmutableSegmentDataManager newSegmentManager, PartitionUpsertMetadataManager partitionUpsertMetadataManager) {
-    // When replacing a segment, we should register the new segment 'after' it is fully initialized by
-    // partitionUpsertMetadataManager to fill up its validDocId bitmap. Otherwise, the queries will lose the access
-    // to the valid docs in the old segment immediately, but the validDocId bitmap of the new segment is still
-    // being filled by partitionUpsertMetadataManager, making the queries see less valid docs than expected.
-    IndexSegment oldSegment = oldSegmentManager.getSegment();
-    ImmutableSegment immutableSegment = newSegmentManager.getSegment();
-    UpsertConfig.ConsistencyMode consistencyMode = _tableUpsertMetadataManager.getContext().getConsistencyMode();
-    if (consistencyMode == UpsertConfig.ConsistencyMode.NONE) {
-      partitionUpsertMetadataManager.replaceSegment(immutableSegment, oldSegment);
-      registerSegment(segmentName, newSegmentManager, partitionUpsertMetadataManager);
-    } else {
-      // By default, when replacing a segment, the old segment is kept intact and visible to query until the new
-      // segment is registered as in the if-branch above. But the newly ingested records will invalidate valid
-      // docs in the new segment as the upsert metadata gets updated during replacement, so the query will miss the
-      // new updates in the new segment, until it's registered after the replacement is done.
-      // For consistent data view, we make both old and new segment visible to the query and update both in place
-      // when segment replacement and new data ingestion are happening in parallel.
-      SegmentDataManager duoSegmentDataManager = new DuoSegmentDataManager(newSegmentManager, oldSegmentManager);
-      registerSegment(segmentName, duoSegmentDataManager, partitionUpsertMetadataManager);
-      partitionUpsertMetadataManager.replaceSegment(immutableSegment, oldSegment);
-      registerSegment(segmentName, newSegmentManager, partitionUpsertMetadataManager);
-    }
-    _logger.info("Replaced {} segment: {} with upsert enabled and consistency mode: {}",
-        oldSegment instanceof ImmutableSegment ? "immutable" : "mutable", segmentName, consistencyMode);
-    oldSegmentManager.offload();
-    releaseSegment(oldSegmentManager);
-  }
-
-  private void registerSegment(String segmentName, SegmentDataManager segmentDataManager,
-      @Nullable PartitionUpsertMetadataManager partitionUpsertMetadataManager) {
-    if (partitionUpsertMetadataManager != null) {
-      // Register segment to the upsert metadata manager before registering it to table manager, so that the upsert
-      // metadata manger can update the upsert view before the segment becomes visible to queries.
-      partitionUpsertMetadataManager.trackSegmentForUpsertView(segmentDataManager.getSegment());
-    }
-    registerSegment(segmentName, segmentDataManager);
-  }
-
-  /**
-   * Sets the ZK creation time in the segment metadata if available, to ensure consistent
-   * creation times across replicas for upsert operations.
-   */
-  private void setZkCreationTimeIfAvailable(ImmutableSegment segment, @Nullable SegmentZKMetadata zkMetadata) {
-    if (zkMetadata != null && zkMetadata.getCreationTime() > 0) {
-      SegmentMetadata segmentMetadata = segment.getSegmentMetadata();
-      if (segmentMetadata instanceof SegmentMetadataImpl) {
-        SegmentMetadataImpl segmentMetadataImpl = (SegmentMetadataImpl) segmentMetadata;
-        segmentMetadataImpl.setZkCreationTime(zkMetadata.getCreationTime());
-        _logger.info("Set ZK creation time {} for segment: {} in upsert table", zkMetadata.getCreationTime(),
-            zkMetadata.getSegmentName());
-      }
-    }
-  }
-
-  /**
-   * Replaces the CONSUMING segment with a downloaded committed one.
-   */
+  /// Replaces the CONSUMING segment with a downloaded committed one.
   public void downloadAndReplaceConsumingSegment(SegmentZKMetadata zkMetadata)
       throws Exception {
     String segmentName = zkMetadata.getSegmentName();
@@ -851,24 +767,21 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     // Get a new index loading config with latest table config and schema to load the segment
     IndexLoadingConfig indexLoadingConfig = fetchIndexLoadingConfig();
     indexLoadingConfig.setSegmentTier(zkMetadata.getTier());
-    addSegment(ImmutableSegmentLoader.load(indexDir, indexLoadingConfig, _segmentOperationsThrottler), zkMetadata);
+    addSegment(ImmutableSegmentLoader.load(indexDir, indexLoadingConfig, _segmentOperationsThrottlerSet, zkMetadata),
+        zkMetadata);
     _ingestionDelayTracker.markPartitionForVerification(segmentName);
     _logger.info("Downloaded and replaced CONSUMING segment: {}", segmentName);
   }
 
-  /**
-   * Replaces the CONSUMING segment with the one sealed locally.
-   */
+  /// Replaces the CONSUMING segment with the one sealed locally.
   @Deprecated
   public void replaceConsumingSegment(String segmentName)
       throws Exception {
     replaceConsumingSegment(segmentName, null);
   }
 
-  /**
-   * Replaces the CONSUMING segment with the one sealed locally.
-   * This overloaded method avoids extra ZK call when the caller already has SegmentZKMetadata.
-   */
+  /// Replaces the CONSUMING segment with the one sealed locally.
+  /// This overloaded method avoids extra ZK call when the caller already has SegmentZKMetadata.
   public void replaceConsumingSegment(String segmentName, @Nullable SegmentZKMetadata zkMetadata)
       throws Exception {
     _logger.info("Replacing CONSUMING segment: {} with the one sealed locally", segmentName);
@@ -876,7 +789,7 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
     // Get a new index loading config with latest table config and schema to load the segment
     IndexLoadingConfig indexLoadingConfig = fetchIndexLoadingConfig();
     ImmutableSegment immutableSegment =
-        ImmutableSegmentLoader.load(indexDir, indexLoadingConfig, _segmentOperationsThrottler);
+        ImmutableSegmentLoader.load(indexDir, indexLoadingConfig, _segmentOperationsThrottlerSet, zkMetadata);
 
     addSegment(immutableSegment, zkMetadata);
     _ingestionDelayTracker.markPartitionForVerification(segmentName);
@@ -888,25 +801,19 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
   }
 
   @VisibleForTesting
-  public TableUpsertMetadataManager getTableUpsertMetadataManager() {
-    return _tableUpsertMetadataManager;
-  }
-
-  @VisibleForTesting
   public TableDedupMetadataManager getTableDedupMetadataManager() {
     return _tableDedupMetadataManager;
   }
 
-  /**
-   * Retrieves a mapping of partition id to the primary key count for the partition.
-   *
-   * @return A {@code Map} where keys are partition id and values are count of primary keys for that specific partition.
-   */
-  public Map<Integer, Long> getUpsertPartitionToPrimaryKeyCount() {
+  @Override
+  public Map<Integer, Long> getPartitionToPrimaryKeyCount() {
     if (isUpsertEnabled()) {
       return _tableUpsertMetadataManager.getPartitionToPrimaryKeyCount();
     }
-    return Collections.emptyMap();
+    if (isDedupEnabled()) {
+      return _tableDedupMetadataManager.getPartitionToPrimaryKeyCount();
+    }
+    return Map.of();
   }
 
   @Nullable
@@ -921,27 +828,36 @@ public class RealtimeTableDataManager extends BaseTableDataManager {
         k -> new ConsumerCoordinator(_enforceConsumptionInOrder, this));
   }
 
-  @VisibleForTesting
-  void setEnforceConsumptionInOrder(boolean enforceConsumptionInOrder) {
+  public boolean isEnforceConsumptionInOrderEnabled() {
+    return _enforceConsumptionInOrder;
+  }
+
+  public void setEnforceConsumptionInOrder(boolean enforceConsumptionInOrder) {
     _enforceConsumptionInOrder = enforceConsumptionInOrder;
   }
 
-  /**
-   * Validate a schema against the table config for real-time record consumption.
-   * Ideally, we should validate these things when schema is added or table is created, but either of these
-   * may be changed while the table is already provisioned. For the change to take effect, we need to restart the
-   * servers, so  validation at this place is fine.
-   *
-   * As of now, the following validations are done:
-   * 1. Make sure that the sorted column, if specified, is not multi-valued.
-   * 2. Validate the schema itself
-   *
-   * We allow the user to specify multiple sorted columns, but only consider the first one for now.
-   * (secondary sort is not yet implemented).
-   *
-   * If we add more validations, it may make sense to split this method into multiple validation methods.
-   * But then, we are trying to figure out all the invalid cases before we return from this method...
-   */
+  public BooleanSupplier getIsServerReadyToServeQueries() {
+    return _isServerReadyToServeQueries;
+  }
+
+  ServerIngestionOomProtectionManager getServerIngestionOomProtectionManager() {
+    return _serverIngestionOomProtectionManager;
+  }
+
+  /// Validate a schema against the table config for real-time record consumption.
+  /// Ideally, we should validate these things when schema is added or table is created, but either of these
+  /// may be changed while the table is already provisioned. For the change to take effect, we need to restart the
+  /// servers, so  validation at this place is fine.
+  ///
+  /// As of now, the following validations are done:
+  /// 1. Make sure that the sorted column, if specified, is not multi-valued.
+  /// 2. Validate the schema itself
+  ///
+  /// We allow the user to specify multiple sorted columns, but only consider the first one for now.
+  /// (secondary sort is not yet implemented).
+  ///
+  /// If we add more validations, it may make sense to split this method into multiple validation methods.
+  /// But then, we are trying to figure out all the invalid cases before we return from this method...
   private void validate(TableConfig tableConfig, Schema schema) {
     // 1. Make sure that the sorted column is not a multi-value field.
     IndexingConfig indexingConfig = tableConfig.getIndexingConfig();

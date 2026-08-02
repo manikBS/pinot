@@ -19,7 +19,6 @@
 package org.apache.pinot.core.operator.filter;
 
 import com.google.common.base.CaseFormat;
-import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import org.apache.pinot.common.request.context.ExpressionContext;
@@ -40,11 +39,9 @@ import org.apache.pinot.segment.spi.index.IndexType;
 import org.apache.pinot.segment.spi.index.reader.JsonIndexReader;
 
 
-/**
- * Filter operator for Map matching that internally uses JsonMatchFilterOperator or ExpressionFilterOperator.
- * This operator converts map predicates to JSON predicates and delegates filtering operations
- * to JsonMatchFilterOperator.
- */
+/// Filter operator for Map matching that internally uses JsonMatchFilterOperator or ExpressionFilterOperator.
+/// This operator converts map predicates to JSON predicates and delegates filtering operations
+/// to JsonMatchFilterOperator.
 public class MapFilterOperator extends BaseFilterOperator {
   private static final String EXPLAIN_NAME = "FILTER_MAP";
 
@@ -93,9 +90,7 @@ public class MapFilterOperator extends BaseFilterOperator {
     }
   }
 
-  /**
-   * Creates a FilterContext based on the original predicate type
-   */
+  /// Creates a FilterContext based on the original predicate type
   private FilterContext createFilterContext() {
     // Create identifier expression for the JSON column
     ExpressionContext keyLhs = ExpressionContext.forIdentifier(_keyName);
@@ -170,7 +165,7 @@ public class MapFilterOperator extends BaseFilterOperator {
 
   @Override
   public List<Operator> getChildOperators() {
-    return Collections.emptyList();
+    return List.of();
   }
 
   @Override
@@ -210,12 +205,10 @@ public class MapFilterOperator extends BaseFilterOperator {
     }
   }
 
-  /**
-   * Determines whether to use JSON index for the given predicate type.
-   *
-   * @param predicateType The type of predicate
-   * @return true if the predicate type is supported for JSON index, false otherwise
-   */
+  /// Determines whether to use JSON index for the given predicate type.
+  ///
+  /// @param predicateType The type of predicate
+  /// @return true if the predicate type is supported for JSON index, false otherwise
   private static boolean canUseJsonIndex(Predicate.Type predicateType) {
     switch (predicateType) {
       case EQ:

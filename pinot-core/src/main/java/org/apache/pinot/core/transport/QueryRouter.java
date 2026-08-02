@@ -36,52 +36,38 @@ import org.apache.pinot.core.routing.ImplicitHybridTableRouteInfo;
 import org.apache.pinot.core.routing.SegmentsToQuery;
 import org.apache.pinot.core.routing.TableRouteInfo;
 import org.apache.pinot.core.transport.server.routing.stats.ServerRoutingStatsManager;
+import org.apache.pinot.spi.accounting.ThreadAccountant;
 import org.apache.pinot.spi.config.table.TableType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/**
- * The {@code QueryRouter} class provides methods to route the query based on the routing table, and returns a
- * {@link AsyncQueryResponse} so that caller can handle the query response asynchronously.
- * <p>It works on {@link ServerChannels} which maintains only a single connection between the broker and each server.
- */
+/// The `QueryRouter` class provides methods to route the query based on the routing table, and returns a
+/// [AsyncQueryResponse] so that caller can handle the query response asynchronously.
+///
+/// It works on [ServerChannels] which maintains only a single connection between the broker and each server.
 @ThreadSafe
 public class QueryRouter {
   private static final Logger LOGGER = LoggerFactory.getLogger(QueryRouter.class);
 
   private final String _brokerId;
-  private final BrokerMetrics _brokerMetrics;
   private final ServerChannels _serverChannels;
   private final ServerChannels _serverChannelsTls;
-  private final ConcurrentHashMap<Long, AsyncQueryResponse> _asyncQueryResponseMap = new ConcurrentHashMap<>();
   private final ServerRoutingStatsManager _serverRoutingStatsManager;
 
-  /**
-   * Creates an unsecured query router.
-   * @param brokerId broker id
-   * @param brokerMetrics broker metrics
-   * @param serverRoutingStatsManager
-   */
-  public QueryRouter(String brokerId, BrokerMetrics brokerMetrics,
-      ServerRoutingStatsManager serverRoutingStatsManager) {
-    this(brokerId, brokerMetrics, null, null, serverRoutingStatsManager);
-  }
+  private final BrokerMetrics _brokerMetrics = BrokerMetrics.get();
+  private final ConcurrentHashMap<Long, AsyncQueryResponse> _asyncQueryResponseMap = new ConcurrentHashMap<>();
 
-  /**
-   * Creates a query router with TLS config.
-   *
-   * @param brokerId broker id
-   * @param brokerMetrics broker metrics
-   * @param nettyConfig configurations for netty library
-   * @param tlsConfig TLS config
-   */
-  public QueryRouter(String brokerId, BrokerMetrics brokerMetrics, @Nullable NettyConfig nettyConfig,
-      @Nullable TlsConfig tlsConfig, ServerRoutingStatsManager serverRoutingStatsManager) {
+  /// Creates a query router with TLS config.
+  ///
+  /// @param brokerId broker id
+  /// @param nettyConfig configurations for netty library
+  /// @param tlsConfig TLS config
+  public QueryRouter(String brokerId, @Nullable NettyConfig nettyConfig, @Nullable TlsConfig tlsConfig,
+      ServerRoutingStatsManager serverRoutingStatsManager, ThreadAccountant threadAccountant) {
     _brokerId = brokerId;
-    _brokerMetrics = brokerMetrics;
-    _serverChannels = new ServerChannels(this, brokerMetrics, nettyConfig, null);
-    _serverChannelsTls = tlsConfig != null ? new ServerChannels(this, brokerMetrics, nettyConfig, tlsConfig) : null;
+    _serverChannels = new ServerChannels(this, nettyConfig, null, threadAccountant);
+    _serverChannelsTls = tlsConfig != null ? new ServerChannels(this, nettyConfig, tlsConfig, threadAccountant) : null;
     _serverRoutingStatsManager = serverRoutingStatsManager;
   }
 
@@ -162,21 +148,23 @@ public class QueryRouter {
 
   public boolean hasChannel(ServerInstance serverInstance) {
     if (_serverChannelsTls != null) {
-      return _serverChannelsTls.hasChannel(serverInstance.toServerRoutingInstance(TableType.OFFLINE, true));
+      return _serverChannelsTls.hasChannel(
+          serverInstance.toServerRoutingInstance(TableType.OFFLINE, ServerInstance.RoutingType.NETTY_TLS));
     } else {
-      return _serverChannels.hasChannel(serverInstance.toServerRoutingInstance(TableType.OFFLINE, false));
+      return _serverChannels.hasChannel(
+          serverInstance.toServerRoutingInstance(TableType.OFFLINE, ServerInstance.RoutingType.NETTY));
     }
   }
 
-  /**
-   * Connects to the given server, returns {@code true} if the server is successfully connected.
-   */
+  /// Connects to the given server, returns `true` if the server is successfully connected.
   public boolean connect(ServerInstance serverInstance) {
     try {
       if (_serverChannelsTls != null) {
-        _serverChannelsTls.connect(serverInstance.toServerRoutingInstance(TableType.OFFLINE, true));
+        _serverChannelsTls.connect(
+            serverInstance.toServerRoutingInstance(TableType.OFFLINE, ServerInstance.RoutingType.NETTY_TLS));
       } else {
-        _serverChannels.connect(serverInstance.toServerRoutingInstance(TableType.OFFLINE, false));
+        _serverChannels.connect(
+            serverInstance.toServerRoutingInstance(TableType.OFFLINE, ServerInstance.RoutingType.NETTY));
       }
       return true;
     } catch (Exception e) {

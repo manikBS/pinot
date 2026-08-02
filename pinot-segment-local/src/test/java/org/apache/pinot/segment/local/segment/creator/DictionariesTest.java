@@ -37,11 +37,11 @@ import org.apache.commons.io.FileUtils;
 import org.apache.pinot.plugin.inputformat.avro.AvroUtils;
 import org.apache.pinot.segment.local.PinotBuffersAfterMethodCheckRule;
 import org.apache.pinot.segment.local.indexsegment.immutable.ImmutableSegmentLoader;
-import org.apache.pinot.segment.local.segment.creator.impl.SegmentCreationDriverFactory;
 import org.apache.pinot.segment.local.segment.creator.impl.SegmentDictionaryCreator;
+import org.apache.pinot.segment.local.segment.creator.impl.SegmentIndexCreationDriverImpl;
 import org.apache.pinot.segment.local.segment.creator.impl.stats.AbstractColumnStatisticsCollector;
 import org.apache.pinot.segment.local.segment.creator.impl.stats.BigDecimalColumnPreIndexStatsCollector;
-import org.apache.pinot.segment.local.segment.creator.impl.stats.BytesColumnPredIndexStatsCollector;
+import org.apache.pinot.segment.local.segment.creator.impl.stats.BytesColumnPreIndexStatsCollector;
 import org.apache.pinot.segment.local.segment.creator.impl.stats.DoubleColumnPreIndexStatsCollector;
 import org.apache.pinot.segment.local.segment.creator.impl.stats.FloatColumnPreIndexStatsCollector;
 import org.apache.pinot.segment.local.segment.creator.impl.stats.IntColumnPreIndexStatsCollector;
@@ -101,7 +101,7 @@ public class DictionariesTest implements PinotBuffersAfterMethodCheckRule {
         SegmentTestUtils.getSegmentGenSpecWithSchemAndProjectedColumns(new File(filePath), INDEX_DIR, "time_day",
             TimeUnit.DAYS, "test");
     _tableConfig = config.getTableConfig();
-    final SegmentIndexCreationDriver driver = SegmentCreationDriverFactory.get(null);
+    final SegmentIndexCreationDriver driver = new SegmentIndexCreationDriverImpl();
     driver.init(config);
     driver.build();
     _segmentDirectory = new File(INDEX_DIR, driver.getSegmentName());
@@ -390,8 +390,8 @@ public class DictionariesTest implements PinotBuffersAfterMethodCheckRule {
     Assert.assertFalse(statsCollector.isSorted());
     statsCollector.seal();
     Assert.assertEquals(statsCollector.getCardinality(), 6);
-    Assert.assertEquals((statsCollector.getMinValue()).toString(), "a");
-    Assert.assertEquals((statsCollector.getMaxValue()).toString(), "z");
+    Assert.assertEquals(statsCollector.getMinValue().toString(), "a");
+    Assert.assertEquals(statsCollector.getMaxValue().toString(), "z");
     Assert.assertFalse(statsCollector.isSorted());
   }
 
@@ -447,12 +447,10 @@ public class DictionariesTest implements PinotBuffersAfterMethodCheckRule {
     Assert.assertFalse(statsCollector.isSorted());
   }
 
-  /**
-   * Test for ensuring that Strings with special characters can be handled
-   * correctly.
-   *
-   * @throws Exception
-   */
+  /// Test for ensuring that Strings with special characters can be handled
+  /// correctly.
+  ///
+  /// @throws Exception
   @Test
   public void testUTF8Characters()
       throws Exception {
@@ -478,9 +476,7 @@ public class DictionariesTest implements PinotBuffersAfterMethodCheckRule {
     FileUtils.deleteQuietly(indexDir);
   }
 
-  /**
-   * Tests SegmentDictionaryCreator for case when there is only one string and it is empty.
-   */
+  /// Tests SegmentDictionaryCreator for case when there is only one string and it is empty.
   @Test
   public void testSingleEmptyString()
       throws Exception {
@@ -497,13 +493,11 @@ public class DictionariesTest implements PinotBuffersAfterMethodCheckRule {
     FileUtils.deleteQuietly(indexDir);
   }
 
-  /**
-   * Helper method to build stats collector for a given column.
-   *
-   * @param column Column name
-   * @param dataType Data type for the column
-   * @return StatsCollector for the column
-   */
+  /// Helper method to build stats collector for a given column.
+  ///
+  /// @param column Column name
+  /// @param dataType Data type for the column
+  /// @return StatsCollector for the column
   private AbstractColumnStatisticsCollector buildStatsCollector(String column, DataType dataType) {
     Schema schema = new Schema();
     schema.addField(new DimensionFieldSpec(column, dataType, true));
@@ -542,7 +536,7 @@ public class DictionariesTest implements PinotBuffersAfterMethodCheckRule {
       case STRING:
         return new StringColumnPreIndexStatsCollector(column, statsCollectorConfig);
       case BYTES:
-        return new BytesColumnPredIndexStatsCollector(column, statsCollectorConfig);
+        return new BytesColumnPreIndexStatsCollector(column, statsCollectorConfig);
       default:
         throw new IllegalArgumentException("Illegal data type for stats builder: " + dataType);
     }

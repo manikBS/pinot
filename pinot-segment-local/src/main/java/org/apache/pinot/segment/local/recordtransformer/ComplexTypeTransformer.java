@@ -29,6 +29,7 @@ import java.util.Objects;
 import java.util.Set;
 import javax.annotation.Nullable;
 import org.apache.pinot.common.function.scalar.JsonFunctions;
+import org.apache.pinot.common.utils.ThrottledLogger;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.ingestion.ComplexTypeConfig;
 import org.apache.pinot.spi.config.table.ingestion.ComplexTypeConfig.CollectionNotUnnestedToJson;
@@ -39,53 +40,52 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/**
- * A transformer to handle the complex types such as Map and Collection, with flattening and unnesting.
- * <p>
- * The map flattening rule will recursively flatten all the map types, except for those under the collection that is
- * not marked as to unnest.
- *
- * For example:
- * <pre>
- * {
- *    "t1":{
- *       "array":[
- *          {
- *             "t2":{
- *                "a":"v1"
- *             }
- *          }
- *       ]
- *    }
- * }
- * </pre>
- *
- * flattens to
- * <pre>
- * {
- *    "t1.array":[
- *       {
- *          "t2.a":"v1"
- *       }
- *    ]
- * }
- * </pre>
- *
- * </p>
- * The unnesting rule will flatten all the collections provided, which are the paths navigating to the collections. For
- * the same example above. If the the collectionToUnnest is provided as "t1.array", then the rule will unnest the
- * previous output to:
- *
- * <pre>
- * [
- *    {
- *       "t1.arrayt2.a": "v1",
- *    }
- * ]
- * </pre>
- *
- * TODO: support multi-dimensional array handling
- */
+/// A transformer to handle the complex types such as Map and Collection, with flattening and unnesting.
+///
+/// The map flattening rule will recursively flatten all the map types, except for those under the collection that is
+/// not marked as to unnest.
+///
+/// For example:
+///
+/// ```
+/// {
+///    "t1":{
+///       "array":[
+///          {
+///             "t2":{
+///                "a":"v1"
+///             }
+///          }
+///       ]
+///    }
+/// }
+/// ```
+///
+/// flattens to
+///
+/// ```
+/// {
+///    "t1.array":[
+///       {
+///          "t2.a":"v1"
+///       }
+///    ]
+/// }
+/// ```
+///
+/// The unnesting rule will flatten all the collections provided, which are the paths navigating to the collections. For
+/// the same example above. If the collectionToUnnest is provided as "t1.array", then the rule will unnest the
+/// previous output to:
+///
+/// ```
+/// [
+///    {
+///       "t1.arrayt2.a": "v1",
+///    }
+/// ]
+/// ```
+///
+/// TODO: support multi-dimensional array handling
 @SuppressWarnings({"rawtypes", "unchecked"})
 public class ComplexTypeTransformer implements RecordTransformer {
   private static final Logger LOGGER = LoggerFactory.getLogger(ComplexTypeTransformer.class);
@@ -98,6 +98,7 @@ public class ComplexTypeTransformer implements RecordTransformer {
   private final CollectionNotUnnestedToJson _collectionNotUnnestedToJson;
   private final Map<String, String> _prefixesToRename;
   private final boolean _continueOnError;
+  private final ThrottledLogger _throttledLogger;
   private final List<String> _fieldsToUnnestAndKeepOriginalValue;
 
   private ComplexTypeTransformer(TableConfig tableConfig) {
@@ -122,6 +123,7 @@ public class ComplexTypeTransformer implements RecordTransformer {
         Objects.requireNonNullElse(complexTypeConfig.getCollectionNotUnnestedToJson(), DEFAULT_COLLECTION_TO_JSON_MODE);
     _prefixesToRename = Objects.requireNonNullElse(complexTypeConfig.getPrefixesToRename(), Map.of());
     _continueOnError = ingestionConfig.isContinueOnError();
+    _throttledLogger = new ThrottledLogger(LOGGER, ingestionConfig);
   }
 
   /// Returns a [ComplexTypeTransformer] if it is defined in the table config, `null` otherwise.
@@ -143,6 +145,7 @@ public class ComplexTypeTransformer implements RecordTransformer {
     _collectionNotUnnestedToJson = collectionNotUnnestedToJson;
     _prefixesToRename = prefixesToRename;
     _continueOnError = continueOnError;
+    _throttledLogger = new ThrottledLogger(LOGGER, 0.0);
   }
 
   @VisibleForTesting
@@ -233,7 +236,7 @@ public class ComplexTypeTransformer implements RecordTransformer {
         if (!_continueOnError) {
           throw new RuntimeException("Caught exception while transforming complex types", e);
         }
-        LOGGER.debug("Caught exception while transforming complex types for record: {}", record.toString(), e);
+        _throttledLogger.warn("Caught exception while transforming complex types", e);
         record.markIncomplete();
       }
     }
@@ -245,7 +248,7 @@ public class ComplexTypeTransformer implements RecordTransformer {
           if (!_continueOnError) {
             throw new RuntimeException("Caught exception while renaming prefixes", e);
           }
-          LOGGER.debug("Caught exception while renaming prefixes for record: {}", record.toString(), e);
+          _throttledLogger.warn("Caught exception while renaming prefixes", e);
           record.markIncomplete();
         }
       }
@@ -309,10 +312,8 @@ public class ComplexTypeTransformer implements RecordTransformer {
     return copy;
   }
 
-  /**
-   * Recursively flatten all the Maps in the record. It will also navigate into the collections marked as "unnest" and
-   * flatten the nested maps.
-   */
+  /// Recursively flatten all the Maps in the record. It will also navigate into the collections marked as "unnest" and
+  /// flatten the nested maps.
   @VisibleForTesting
   protected void flattenMap(GenericRow record, List<String> columns) {
     // TODO: During the flattening, there are columns added to the record which are not needed in downstream
@@ -374,9 +375,8 @@ public class ComplexTypeTransformer implements RecordTransformer {
     }
   }
 
-  /**
-   * Loops through all columns and renames the column's prefix with the corresponding replacement if the prefix matches.
-   */
+  /// Loops through all columns and renames the column's prefix with the corresponding replacement if the prefix
+  /// matches.
   @VisibleForTesting
   void renamePrefixes(GenericRow record) {
     assert !_prefixesToRename.isEmpty();
@@ -416,10 +416,8 @@ public class ComplexTypeTransformer implements RecordTransformer {
     return !(element instanceof Map || element instanceof Collection || isNonPrimitiveArray(element));
   }
 
-  /**
-   * This function assumes the collection is a homogeneous data structure that elements have same data type.
-   * So it checks the first element only.
-   */
+  /// This function assumes the collection is a homogeneous data structure that elements have same data type.
+  /// So it checks the first element only.
   private boolean containPrimitives(Collection value) {
     if (value.isEmpty()) {
       return true;

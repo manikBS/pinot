@@ -22,7 +22,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.apache.pinot.spi.env.PinotConfiguration;
-import org.apache.pinot.spi.utils.CommonConstants;
+import org.apache.pinot.spi.utils.CommonConstants.Accounting;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
@@ -38,23 +38,24 @@ public class WorkloadBudgetManagerTest {
   @BeforeClass
   void setup() {
     _config = new PinotConfiguration();
-    _config.setProperty(CommonConstants.Accounting.CONFIG_OF_WORKLOAD_ENABLE_COST_COLLECTION, true);
-    _config.setProperty(CommonConstants.Accounting.CONFIG_OF_WORKLOAD_ENFORCEMENT_WINDOW_MS, _enforcementWindowMs);
+    _config.setProperty(Accounting.Keys.WORKLOAD_ENABLE_COST_COLLECTION, true);
+    _config.setProperty(Accounting.Keys.WORKLOAD_ENFORCEMENT_WINDOW_MS, _enforcementWindowMs);
+    _config.setProperty(Accounting.Keys.WORKLOAD_ENABLE_COST_ENFORCEMENT, true);
   }
 
   @Test
   void testAddOrUpdateAndRetrieveBudget() {
-    WorkloadBudgetManager manager = new WorkloadBudgetManager(_config);
+    WorkloadBudgetManager manager = new DefaultWorkloadBudgetManager(_config);
     manager.addOrUpdateWorkload("test-workload", 1_000_000L, 1_000_000L);
 
-    WorkloadBudgetManager.BudgetStats stats = manager.getRemainingBudgetForWorkload("test-workload");
+    WorkloadBudgetManager.BudgetStats stats = manager.getBudgetStats("test-workload");
     assertEquals(1_000_000L, stats._cpuRemaining);
     assertEquals(1_000_000L, stats._memoryRemaining);
   }
 
   @Test
   void testTryChargeWithoutBudget() {
-    WorkloadBudgetManager mgr = new WorkloadBudgetManager(_config);
+    WorkloadBudgetManager mgr = new DefaultWorkloadBudgetManager(_config);
     WorkloadBudgetManager.BudgetStats stats = mgr.tryCharge("unknown-workload", 100L, 100L);
     assertEquals(Long.MAX_VALUE, stats._cpuRemaining);
     assertEquals(Long.MAX_VALUE, stats._memoryRemaining);
@@ -62,12 +63,12 @@ public class WorkloadBudgetManagerTest {
 
   @Test
   void testBudgetResetAfterInterval() throws InterruptedException {
-    WorkloadBudgetManager mgr = new WorkloadBudgetManager(_config);
+    WorkloadBudgetManager mgr = new DefaultWorkloadBudgetManager(_config);
     mgr.addOrUpdateWorkload("reset-test", 1_000_000L, 1_000_000L);
     mgr.tryCharge("reset-test", 500_000L, 500_000L);
 
     // Ensure budget is charged
-    WorkloadBudgetManager.BudgetStats usedStats = mgr.getRemainingBudgetForWorkload("reset-test");
+    WorkloadBudgetManager.BudgetStats usedStats = mgr.getBudgetStats("reset-test");
     assertEquals(500_000L, usedStats._cpuRemaining);
     assertEquals(500_000L, usedStats._memoryRemaining);
 
@@ -75,14 +76,14 @@ public class WorkloadBudgetManagerTest {
     Thread.sleep(_enforcementWindowMs + 1000L);
 
     // Check if reset occurred
-    WorkloadBudgetManager.BudgetStats resetStats = mgr.getRemainingBudgetForWorkload("reset-test");
+    WorkloadBudgetManager.BudgetStats resetStats = mgr.getBudgetStats("reset-test");
     assertEquals(1_000_000L, resetStats._cpuRemaining);
     assertEquals(1_000_000L, resetStats._memoryRemaining);
   }
 
   @Test
   void testConcurrentTryChargeSingleWorkload() throws InterruptedException {
-    WorkloadBudgetManager manager = new WorkloadBudgetManager(_config);
+    WorkloadBudgetManager manager = new DefaultWorkloadBudgetManager(_config);
     String workload = "concurrent-test";
     long initialCpuBudget = 2_000_000L;
     long initialMemBudget = 2_000_000L;
@@ -111,7 +112,7 @@ public class WorkloadBudgetManagerTest {
     long totalCpuCharged = numThreads * chargesPerThread * cpuChargePerCall;
     long totalMemCharged = numThreads * chargesPerThread * memChargePerCall;
 
-    WorkloadBudgetManager.BudgetStats remaining = manager.getRemainingBudgetForWorkload(workload);
+    WorkloadBudgetManager.BudgetStats remaining = manager.getBudgetStats(workload);
     assertEquals(initialCpuBudget - totalCpuCharged, remaining._cpuRemaining,
         "CPU budget mismatch after concurrent updates");
     assertEquals(initialMemBudget - totalMemCharged, remaining._memoryRemaining,
@@ -120,7 +121,7 @@ public class WorkloadBudgetManagerTest {
 
   @Test
   void testCanAdmitQuery() {
-    WorkloadBudgetManager manager = new WorkloadBudgetManager(_config);
+    WorkloadBudgetManager manager = new DefaultWorkloadBudgetManager(_config);
     // Scenario 1: No budget configured -> should admit
     assertTrue(manager.canAdmitQuery("unconfigured-workload"),
         "Workload without budget should be admitted");

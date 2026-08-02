@@ -18,15 +18,17 @@
  */
 package org.apache.pinot.core.operator.transform.function;
 
-import com.google.common.base.Preconditions;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import org.apache.pinot.common.utils.RoaringBitmapUtils;
 import org.apache.pinot.core.operator.ColumnContext;
 import org.apache.pinot.core.operator.blocks.ValueBlock;
 import org.apache.pinot.core.operator.transform.TransformResultMetadata;
 import org.apache.pinot.spi.data.FieldSpec.DataType;
 import org.apache.pinot.spi.utils.ArrayCopyUtils;
+import org.apache.pinot.spi.utils.TimestampUtils;
+import org.roaringbitmap.RoaringBitmap;
 
 
 public class CastTransformFunction extends BaseTransformFunction {
@@ -74,9 +76,7 @@ public class CastTransformFunction extends BaseTransformFunction {
         case "DECIMAL":
         case "BIGDECIMAL":
         case "BIG_DECIMAL":
-          // TODO: Support MV BIG_DECIMAL
-          Preconditions.checkState(sourceSV, "Cannot cast from MV to BIG_DECIMAL");
-          _resultMetadata = BIG_DECIMAL_SV_NO_DICTIONARY_METADATA;
+          _resultMetadata = sourceSV ? BIG_DECIMAL_SV_NO_DICTIONARY_METADATA : BIG_DECIMAL_MV_NO_DICTIONARY_METADATA;
           break;
         case "BOOL":
         case "BOOLEAN":
@@ -108,6 +108,11 @@ public class CastTransformFunction extends BaseTransformFunction {
           break;
         case "DOUBLE_ARRAY":
           _resultMetadata = DOUBLE_MV_NO_DICTIONARY_METADATA;
+          break;
+        case "DECIMAL_ARRAY":
+        case "BIGDECIMAL_ARRAY":
+        case "BIG_DECIMAL_ARRAY":
+          _resultMetadata = BIG_DECIMAL_MV_NO_DICTIONARY_METADATA;
           break;
         case "STRING_ARRAY":
         case "VARCHAR_ARRAY":
@@ -191,7 +196,19 @@ public class CastTransformFunction extends BaseTransformFunction {
       int length = valueBlock.getNumDocs();
       initLongValuesSV(length);
       String[] stringValues = _transformFunction.transformToStringValuesSV(valueBlock);
-      ArrayCopyUtils.copyToTimestamp(stringValues, _longValuesSV, length);
+      RoaringBitmap nullBitmap = _transformFunction.getNullBitmap(valueBlock);
+      if (_nullHandlingEnabled && nullBitmap != null && !nullBitmap.isEmpty()) {
+        // Null string values can't be converted to valid timestamps, so we skip over those values.
+        // Avoid using RoaringBitmap::contains API in a loop due to poor performance.
+        // Avoid cloning + flipping the null bitmap to reduce allocation.
+        RoaringBitmapUtils.forEachUnset(length, nullBitmap.getIntIterator(), (from, to) -> {
+          for (int i = from; i < to; i++) {
+            _longValuesSV[i] = TimestampUtils.toMillisSinceEpoch(stringValues[i]);
+          }
+        });
+      } else {
+        ArrayCopyUtils.copyToTimestamp(stringValues, _longValuesSV, length);
+      }
       return _longValuesSV;
     } else {
       return _transformFunction.transformToLongValuesSV(valueBlock);
@@ -230,18 +247,20 @@ public class CastTransformFunction extends BaseTransformFunction {
     DataType resultDataType = _resultMetadata.getDataType();
     if (resultDataType.getStoredType() == DataType.STRING) {
       switch (_sourceDataType) {
-        case BOOLEAN:
+        case BOOLEAN: {
           int length = valueBlock.getNumDocs();
           initStringValuesSV(length);
           int[] intValues = _transformFunction.transformToIntValuesSV(valueBlock);
           ArrayCopyUtils.copyFromBoolean(intValues, _stringValuesSV, length);
           return _stringValuesSV;
-        case TIMESTAMP:
-          length = valueBlock.getNumDocs();
+        }
+        case TIMESTAMP: {
+          int length = valueBlock.getNumDocs();
           initStringValuesSV(length);
           long[] longValues = _transformFunction.transformToLongValuesSV(valueBlock);
           ArrayCopyUtils.copyFromTimestamp(longValues, _stringValuesSV, length);
           return _stringValuesSV;
+        }
         default:
           return _transformFunction.transformToStringValuesSV(valueBlock);
       }
@@ -321,6 +340,10 @@ public class CastTransformFunction extends BaseTransformFunction {
         double[][] doubleValuesMV = _transformFunction.transformToDoubleValuesMV(valueBlock);
         ArrayCopyUtils.copyToBoolean(doubleValuesMV, _intValuesMV, length);
         break;
+      case BIG_DECIMAL:
+        BigDecimal[][] bigDecimalValuesMV = _transformFunction.transformToBigDecimalValuesMV(valueBlock);
+        ArrayCopyUtils.copyToBoolean(bigDecimalValuesMV, _intValuesMV, length);
+        break;
       case STRING:
         String[][] stringValuesMV = _transformFunction.transformToStringValuesMV(valueBlock);
         ArrayCopyUtils.copyToBoolean(stringValuesMV, _intValuesMV, length);
@@ -375,6 +398,15 @@ public class CastTransformFunction extends BaseTransformFunction {
   }
 
   @Override
+  public BigDecimal[][] transformToBigDecimalValuesMV(ValueBlock valueBlock) {
+    if (_resultMetadata.getDataType().getStoredType() == DataType.BIG_DECIMAL) {
+      return _transformFunction.transformToBigDecimalValuesMV(valueBlock);
+    } else {
+      return super.transformToBigDecimalValuesMV(valueBlock);
+    }
+  }
+
+  @Override
   public String[][] transformToStringValuesMV(ValueBlock valueBlock) {
     DataType resultDataType = _resultMetadata.getDataType();
     if (resultDataType.getStoredType() == DataType.STRING) {
@@ -413,6 +445,10 @@ public class CastTransformFunction extends BaseTransformFunction {
         case DOUBLE:
           double[][] doubleValuesMV = _transformFunction.transformToDoubleValuesMV(valueBlock);
           ArrayCopyUtils.copy(doubleValuesMV, _stringValuesMV, length);
+          break;
+        case BIG_DECIMAL:
+          BigDecimal[][] bigDecimalValuesMV = _transformFunction.transformToBigDecimalValuesMV(valueBlock);
+          ArrayCopyUtils.copy(bigDecimalValuesMV, _stringValuesMV, length);
           break;
         case BOOLEAN:
           intValuesMV = transformToBooleanValuesMV(valueBlock);

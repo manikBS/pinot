@@ -23,7 +23,7 @@ import java.io.Closeable;
 import java.io.File;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Semaphore;
@@ -49,6 +49,7 @@ import org.apache.pinot.spi.config.table.SegmentPartitionConfig;
 import org.apache.pinot.spi.config.table.SegmentZKPropsConfig;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.TableType;
+import org.apache.pinot.spi.config.table.ingestion.IngestionConfig;
 import org.apache.pinot.spi.data.Schema;
 import org.apache.pinot.spi.data.readers.GenericRow;
 import org.apache.pinot.spi.plugin.PluginManager;
@@ -75,13 +76,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-/**
- * Segment writer to ingest streaming data from a start offset to an end offset.
- *
- * TODO:
- *   1. Clean up this class and only keep the necessary parts.
- *   2. Use a different segment impl for better performance because it doesn't need to serve queries.
- */
+/// Segment writer to ingest streaming data from a start offset to an end offset.
+///
+/// TODO:
+///   1. Clean up this class and only keep the necessary parts.
+///   2. Use a different segment impl for better performance because it doesn't need to serve queries.
 public class StatelessRealtimeSegmentWriter implements Closeable {
 
   private static final int DEFAULT_CAPACITY = 100_000;
@@ -177,9 +176,10 @@ public class StatelessRealtimeSegmentWriter implements Closeable {
     // Load stats history, here we are using the same stats while as the RealtimeSegmentDataManager so that we are
     // much more efficient in allocating buffers. It also works with empty file
     File statsHistoryFile = new File(tableDataDir, SEGMENT_STATS_FILE_NAME);
-    RealtimeSegmentStatsHistory statsHistory = RealtimeSegmentStatsHistory.deserialzeFrom(statsHistoryFile);
+    RealtimeSegmentStatsHistory statsHistory = RealtimeSegmentStatsHistory.deserializeFrom(statsHistoryFile);
 
     // Initialize mutable segment with configurations
+    IngestionConfig ingestionConfig = _tableConfig.getIngestionConfig();
     RealtimeSegmentConfig.Builder realtimeSegmentConfigBuilder = new RealtimeSegmentConfig.Builder(indexLoadingConfig)
         .setTableNameWithType(_tableNameWithType)
         .setSegmentName(_segmentName)
@@ -191,7 +191,10 @@ public class StatelessRealtimeSegmentWriter implements Closeable {
         .setOffHeap(indexLoadingConfig.isRealtimeOffHeapAllocation())
         .setMemoryManager(new MmapMemoryManager(FileUtils.getTempDirectory().getAbsolutePath(), _segmentName, null))
         .setStatsHistory(statsHistory)
-        .setConsumerDir(_resourceDataDir.getAbsolutePath());
+        .setConsumerDir(_resourceDataDir.getAbsolutePath())
+        .setDropRecordOnPartitionMismatch(ingestionConfig != null
+            && ingestionConfig.getStreamIngestionConfig() != null
+            && ingestionConfig.getStreamIngestionConfig().isDropRecordOnPartitionMismatch());
 
     setPartitionParameters(realtimeSegmentConfigBuilder, _tableConfig.getIndexingConfig().getSegmentPartitionConfig());
 
@@ -221,7 +224,8 @@ public class StatelessRealtimeSegmentWriter implements Closeable {
     retryPolicy.attempt(() -> {
       try {
         StreamMessageDecoder streamMessageDecoder = createMessageDecoder(fieldsToRead);
-        localStreamDataDecoder.set(new StreamDataDecoderImpl(streamMessageDecoder));
+        boolean isKeyBytesType = StreamDataDecoderImpl.isKeyBytesType(_schema);
+        localStreamDataDecoder.set(new StreamDataDecoderImpl(streamMessageDecoder, isKeyBytesType));
         return true;
       } catch (Exception e) {
         _logger.warn("Failed to create StreamMessageDecoder. Retrying...", e);
@@ -231,12 +235,10 @@ public class StatelessRealtimeSegmentWriter implements Closeable {
     return localStreamDataDecoder.get();
   }
 
-  /**
-   * Creates a {@link StreamMessageDecoder} using properties in {@link StreamConfig}.
-   *
-   * @param fieldsToRead The fields to read from the source stream
-   * @return The initialized StreamMessageDecoder
-   */
+  /// Creates a [StreamMessageDecoder] using properties in [StreamConfig].
+  ///
+  /// @param fieldsToRead The fields to read from the source stream
+  /// @return The initialized StreamMessageDecoder
   private StreamMessageDecoder createMessageDecoder(Set<String> fieldsToRead) {
     String decoderClass = _streamConfig.getDecoderClass();
     try {
@@ -359,7 +361,7 @@ public class StatelessRealtimeSegmentWriter implements Closeable {
               _tableNameWithType, _tableConfig, _segmentZKMetadata.getSegmentName(),
               _tableConfig.getIndexingConfig().isNullHandlingEnabled());
       try {
-        converter.build(null, null);
+        converter.build(null);
       } catch (Exception e) {
         throw new RuntimeException("Failed to build segment", e);
       }
@@ -394,7 +396,7 @@ public class StatelessRealtimeSegmentWriter implements Closeable {
    *  - partition group id
    */
   private void setPartitionParameters(RealtimeSegmentConfig.Builder realtimeSegmentConfigBuilder,
-      SegmentPartitionConfig segmentPartitionConfig) {
+      @Nullable SegmentPartitionConfig segmentPartitionConfig) {
     if (segmentPartitionConfig != null) {
       Map<String, ColumnPartitionConfig> columnPartitionMap = segmentPartitionConfig.getColumnPartitionMap();
       if (columnPartitionMap.size() == 1) {
@@ -417,7 +419,7 @@ public class StatelessRealtimeSegmentWriter implements Closeable {
           //  Fix this before opening support for partitioning in Kinesis
           int numPartitionGroups =
               _partitionMetadataProvider.computePartitionGroupMetadata(getClientId(), _streamConfig,
-                  Collections.emptyList(), /*maxWaitTimeMs=*/5000).size();
+                  List.of(), /*maxWaitTimeMs=*/5000).size();
 
           if (numPartitionGroups != numPartitions) {
             _logger.info(
@@ -433,7 +435,8 @@ public class StatelessRealtimeSegmentWriter implements Closeable {
 
         realtimeSegmentConfigBuilder.setPartitionColumn(partitionColumn);
         realtimeSegmentConfigBuilder.setPartitionFunction(
-            PartitionFunctionFactory.getPartitionFunction(partitionFunctionName, numPartitions, null));
+            PartitionFunctionFactory.getPartitionFunction(partitionFunctionName, numPartitions,
+                columnPartitionConfig.getFunctionConfig()));
         realtimeSegmentConfigBuilder.setPartitionId(_partitionGroupId);
       } else {
         _logger.warn("Cannot partition on multiple columns: {}", columnPartitionMap.keySet());
@@ -441,9 +444,7 @@ public class StatelessRealtimeSegmentWriter implements Closeable {
     }
   }
 
-  /**
-   * Creates a new stream metadata provider
-   */
+  /// Creates a new stream metadata provider
   private void createPartitionMetadataProvider(String reason) {
     closePartitionMetadataProvider();
     _logger.info("Creating new partition metadata provider, reason: {}", reason);

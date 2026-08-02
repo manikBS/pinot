@@ -19,6 +19,8 @@
 package org.apache.pinot.core.operator.filter;
 
 import java.util.Arrays;
+import javax.annotation.Nullable;
+import org.apache.pinot.core.common.BlockDocIdIterator;
 import org.apache.pinot.core.common.BlockDocIdSet;
 import org.apache.pinot.core.operator.BaseOperator;
 import org.apache.pinot.core.operator.blocks.FilterBlock;
@@ -26,60 +28,102 @@ import org.apache.pinot.core.operator.docidsets.EmptyDocIdSet;
 import org.apache.pinot.core.operator.docidsets.MatchAllDocIdSet;
 import org.apache.pinot.core.operator.docidsets.NotDocIdSet;
 import org.apache.pinot.core.operator.docidsets.OrDocIdSet;
+import org.apache.pinot.segment.spi.Constants;
+import org.roaringbitmap.buffer.ImmutableRoaringBitmap;
+import org.roaringbitmap.buffer.MutableRoaringBitmap;
 
 
-/**
- * The {@link BaseFilterOperator} class is the base class for all filter operators.
- */
+/// The [BaseFilterOperator] class is the base class for all filter operators.
 public abstract class BaseFilterOperator extends BaseOperator<FilterBlock> {
   protected final int _numDocs;
   protected final boolean _nullHandlingEnabled;
+  @Nullable
+  private FilteredDocIds _filteredDocIds;
 
   public BaseFilterOperator(int numDocs, boolean nullHandlingEnabled) {
     _numDocs = numDocs;
     _nullHandlingEnabled = nullHandlingEnabled;
   }
 
-  /**
-   * Returns {@code true} if the result is always empty, {@code false} otherwise.
-   */
+  /// Returns `true` if the result is always empty, `false` otherwise.
   public boolean isResultEmpty() {
     return false;
   }
 
-  /**
-   * Returns {@code true} if the result matches all the records, {@code false} otherwise.
-   */
+  /// Returns `true` if the result matches all the records, `false` otherwise.
   public boolean isResultMatchingAll() {
     return false;
   }
 
-  /**
-   * Returns {@code true} if the filter has an optimized count implementation.
-   */
+  /// Returns `true` if the filter has an optimized count implementation.
   public boolean canOptimizeCount() {
     return false;
   }
 
-  /**
-   * @return the number of matching docs, or throws if it cannot produce this count.
-   */
+  /// @return the number of matching docs, or throws if it cannot produce this count.
   public int getNumMatchingDocs() {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * @return true if the filter operator can produce a bitmap of docIds
-   */
+  /// @return true if the filter operator can produce a bitmap of docIds
   public boolean canProduceBitmaps() {
     return false;
   }
 
-  /**
-   * @return bitmaps of matching docIds
-   */
+  /// @return bitmaps of matching docIds
   public BitmapCollection getBitmaps() {
     throw new UnsupportedOperationException();
+  }
+
+  /// Exact filtered docIds for the operator. `null` indicates match-all.
+  public static final class FilteredDocIds {
+    @Nullable
+    private final ImmutableRoaringBitmap _docIds;
+    private final long _numEntriesScannedInFilter;
+
+    private FilteredDocIds(@Nullable ImmutableRoaringBitmap docIds, long numEntriesScannedInFilter) {
+      _docIds = docIds;
+      _numEntriesScannedInFilter = numEntriesScannedInFilter;
+    }
+
+    @Nullable
+    public ImmutableRoaringBitmap getDocIds() {
+      return _docIds;
+    }
+
+    public long getNumEntriesScannedInFilter() {
+      return _numEntriesScannedInFilter;
+    }
+  }
+
+  /// Returns the exact filtered docIds for the operator. Implementations that cannot produce a bitmap directly are
+  /// materialized once through the filter operator itself so callers can reuse the same primitive.
+  public FilteredDocIds getFilteredDocIds() {
+    if (_filteredDocIds != null) {
+      return _filteredDocIds;
+    }
+
+    if (isResultMatchingAll()) {
+      _filteredDocIds = new FilteredDocIds(null, 0L);
+    } else if (isResultEmpty()) {
+      _filteredDocIds = new FilteredDocIds(new MutableRoaringBitmap(), 0L);
+    } else if (canProduceBitmaps()) {
+      _filteredDocIds = new FilteredDocIds(getBitmaps().reduce(), 0L);
+    } else {
+      FilterBlock filterBlock = nextBlock();
+      BlockDocIdSet blockDocIdSet = filterBlock.getBlockDocIdSet();
+      BlockDocIdSet nonScanBlockDocIdSet = filterBlock.getNonScanFilterBLockDocIdSet();
+      MutableRoaringBitmap bitmap = new MutableRoaringBitmap();
+      BlockDocIdIterator iterator = nonScanBlockDocIdSet.iterator();
+      int docId;
+      while ((docId = iterator.next()) != Constants.EOF) {
+        bitmap.add(docId);
+      }
+      // Compact the materialized bitmap so repeated downstream set operations remain efficient.
+      bitmap.runOptimize();
+      _filteredDocIds = new FilteredDocIds(bitmap, blockDocIdSet.getNumEntriesScannedInFilter());
+    }
+    return _filteredDocIds;
   }
 
   @Override
@@ -87,21 +131,15 @@ public abstract class BaseFilterOperator extends BaseOperator<FilterBlock> {
     return new FilterBlock(getTrues());
   }
 
-  /**
-   * @return document IDs in which the predicate evaluates to true.
-   */
+  /// @return document IDs in which the predicate evaluates to true.
   protected abstract BlockDocIdSet getTrues();
 
-  /**
-   * @return document IDs in which the predicate evaluates to NULL.
-   */
+  /// @return document IDs in which the predicate evaluates to NULL.
   protected BlockDocIdSet getNulls() {
     return EmptyDocIdSet.getInstance();
   }
 
-  /**
-   * @return document IDs in which the predicate evaluates to false.
-   */
+  /// @return document IDs in which the predicate evaluates to false.
   protected BlockDocIdSet getFalses() {
     BlockDocIdSet trues = getTrues();
     if (trues instanceof MatchAllDocIdSet) {

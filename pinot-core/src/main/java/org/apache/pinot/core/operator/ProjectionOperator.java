@@ -19,7 +19,6 @@
 package org.apache.pinot.core.operator;
 
 import com.google.common.base.CaseFormat;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -40,21 +39,32 @@ public class ProjectionOperator extends BaseProjectOperator<ProjectionBlock> imp
   protected static final String EXPLAIN_NAME = "PROJECT";
 
   protected final Map<String, DataSource> _dataSourceMap;
-  protected final BaseOperator<DocIdSetBlock> _docIdSetOperator;
+  protected final BaseDocIdSetOperator _docIdSetOperator;
   protected final DataFetcher _dataFetcher;
   protected final DataBlockCache _dataBlockCache;
   protected final Map<String, ColumnContext> _columnContextMap;
   protected final QueryContext _queryContext;
 
   public ProjectionOperator(Map<String, DataSource> dataSourceMap,
-      @Nullable BaseOperator<DocIdSetBlock> docIdSetOperator, QueryContext queryContext) {
+      @Nullable BaseDocIdSetOperator docIdSetOperator, QueryContext queryContext) {
     _dataSourceMap = dataSourceMap;
     _docIdSetOperator = docIdSetOperator;
-    _dataFetcher = new DataFetcher(dataSourceMap);
+    _dataFetcher = new DataFetcher(dataSourceMap, queryContext.getQueryOptions());
     _dataBlockCache = new DataBlockCache(_dataFetcher);
     _columnContextMap = new HashMap<>(HashUtil.getHashMapCapacity(dataSourceMap.size()));
     dataSourceMap.forEach(
         (column, dataSource) -> _columnContextMap.put(column, ColumnContext.fromDataSource(dataSource)));
+    _queryContext = queryContext;
+  }
+
+  private ProjectionOperator(Map<String, DataSource> dataSourceMap,
+      @Nullable BaseDocIdSetOperator docIdSetOperator, DataFetcher dataFetcher, DataBlockCache dataBlockCache,
+      Map<String, ColumnContext> columnContextMap, QueryContext queryContext) {
+    _dataSourceMap = dataSourceMap;
+    _docIdSetOperator = docIdSetOperator;
+    _dataFetcher = dataFetcher;
+    _dataBlockCache = dataBlockCache;
+    _columnContextMap = columnContextMap;
     _queryContext = queryContext;
   }
 
@@ -86,14 +96,14 @@ public class ProjectionOperator extends BaseProjectOperator<ProjectionBlock> imp
 
   @Override
   public List<Operator<DocIdSetBlock>> getChildOperators() {
-    return Collections.singletonList(_docIdSetOperator);
+    return List.of(_docIdSetOperator);
   }
 
   @Override
   public String toExplainString() {
     StringBuilder stringBuilder = new StringBuilder(EXPLAIN_NAME).append('(');
     // SQL statements such as SELECT 'literal' FROM myTable don't have any projection columns.
-    if (!_dataSourceMap.keySet().isEmpty()) {
+    if (!_dataSourceMap.isEmpty()) {
       int count = 0;
       for (String col : _dataSourceMap.keySet()) {
         if (count == _dataSourceMap.keySet().size() - 1) {
@@ -121,6 +131,21 @@ public class ProjectionOperator extends BaseProjectOperator<ProjectionBlock> imp
   @Override
   public ExecutionStatistics getExecutionStatistics() {
     return _docIdSetOperator != null ? _docIdSetOperator.getExecutionStatistics() : new ExecutionStatistics(0, 0, 0, 0);
+  }
+
+  @Override
+  public boolean isCompatibleWith(DocIdOrder order) {
+    return _docIdSetOperator == null || _docIdSetOperator.isCompatibleWith(order);
+  }
+
+  @Override
+  public BaseProjectOperator<ProjectionBlock> withOrder(DocIdOrder newOrder) {
+    BaseDocIdSetOperator orderedOperator = _docIdSetOperator.withOrder(newOrder);
+    if (orderedOperator == _docIdSetOperator) {
+      return this;
+    }
+    return new ProjectionOperator(_dataSourceMap, orderedOperator, _dataFetcher, _dataBlockCache, _columnContextMap,
+        _queryContext);
   }
 
   @Override

@@ -20,14 +20,16 @@ package org.apache.pinot.segment.local.indexsegment.immutable;
 
 import com.google.common.base.Preconditions;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
-import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.annotation.Nullable;
 import org.apache.commons.io.FileUtils;
 import org.apache.pinot.segment.local.dedup.PartitionDedupMetadataManager;
@@ -35,12 +37,15 @@ import org.apache.pinot.segment.local.indexsegment.IndexSegmentUtils;
 import org.apache.pinot.segment.local.segment.index.datasource.ImmutableDataSource;
 import org.apache.pinot.segment.local.segment.index.loader.IndexLoadingConfig;
 import org.apache.pinot.segment.local.segment.index.map.ImmutableMapDataSource;
+import org.apache.pinot.segment.local.segment.index.openstruct.ImmutableOpenStructDataSource;
 import org.apache.pinot.segment.local.segment.index.readers.text.MultiColumnLuceneTextIndexReader;
 import org.apache.pinot.segment.local.segment.readers.PinotSegmentColumnReader;
 import org.apache.pinot.segment.local.segment.readers.PinotSegmentRecordReader;
 import org.apache.pinot.segment.local.segment.virtualcolumn.VirtualColumnContext;
 import org.apache.pinot.segment.local.startree.v2.store.StarTreeIndexContainer;
 import org.apache.pinot.segment.local.upsert.PartitionUpsertMetadataManager;
+import org.apache.pinot.segment.local.upsert.UpsertUtils;
+import org.apache.pinot.segment.local.upsert.UpsertViewManager;
 import org.apache.pinot.segment.spi.ColumnMetadata;
 import org.apache.pinot.segment.spi.FetchContext;
 import org.apache.pinot.segment.spi.ImmutableSegment;
@@ -49,6 +54,7 @@ import org.apache.pinot.segment.spi.index.IndexReader;
 import org.apache.pinot.segment.spi.index.IndexType;
 import org.apache.pinot.segment.spi.index.StandardIndexes;
 import org.apache.pinot.segment.spi.index.column.ColumnIndexContainer;
+import org.apache.pinot.segment.spi.index.metadata.ColumnMetadataImpl;
 import org.apache.pinot.segment.spi.index.metadata.SegmentMetadataImpl;
 import org.apache.pinot.segment.spi.index.mutable.ThreadSafeMutableRoaringBitmap;
 import org.apache.pinot.segment.spi.index.reader.Dictionary;
@@ -58,7 +64,9 @@ import org.apache.pinot.segment.spi.index.reader.TextIndexReader;
 import org.apache.pinot.segment.spi.index.startree.StarTreeV2;
 import org.apache.pinot.segment.spi.store.SegmentDirectory;
 import org.apache.pinot.segment.spi.store.SegmentDirectoryPaths;
+import org.apache.pinot.spi.data.ComplexFieldSpec;
 import org.apache.pinot.spi.data.FieldSpec;
+import org.apache.pinot.spi.data.OpenStructNaming;
 import org.apache.pinot.spi.data.Schema;
 import org.apache.pinot.spi.data.readers.GenericRow;
 import org.roaringbitmap.buffer.ImmutableRoaringBitmap;
@@ -76,6 +84,10 @@ public class ImmutableSegmentImpl implements ImmutableSegment {
   private final StarTreeIndexContainer _starTreeIndexContainer;
   private final TextIndexReader _multiColumnTextIndex;
   private final Map<String, DataSource> _dataSources;
+  // Guards the post-registration hook so it reaches the directory at most once per segment instance, even when the
+  // same segment is registered more than once (e.g. an upsert replacement with a consistency mode other than NONE
+  // registers the new segment through a DuoSegmentDataManager and then directly).
+  private final AtomicBoolean _segmentAdded = new AtomicBoolean();
 
   // Dedupe
   private PartitionDedupMetadataManager _partitionDedupMetadataManager;
@@ -84,6 +96,7 @@ public class ImmutableSegmentImpl implements ImmutableSegment {
   private PartitionUpsertMetadataManager _partitionUpsertMetadataManager;
   private ThreadSafeMutableRoaringBitmap _validDocIds;
   private ThreadSafeMutableRoaringBitmap _queryableDocIds;
+  private volatile boolean _hasDeletedDocIds;
 
   public ImmutableSegmentImpl(
       SegmentDirectory segmentDirectory,
@@ -98,13 +111,44 @@ public class ImmutableSegmentImpl implements ImmutableSegment {
     _dataSources =
         new Object2ObjectOpenHashMap<>(segmentMetadata.getColumnMetadataMap().size());
 
+    Map<String, Map<String, DataSource>> openStructDenseChildren = new HashMap<>();
+    Map<String, DataSource> openStructSparseChildren = new HashMap<>();
+    Set<String> openStructParents = new HashSet<>();
+
     for (Map.Entry<String, ColumnMetadata> entry : segmentMetadata.getColumnMetadataMap().entrySet()) {
       String colName = entry.getKey();
       ColumnMetadata columnMetadata = entry.getValue();
+
+      if (columnMetadata instanceof ColumnMetadataImpl && ((ColumnMetadataImpl) columnMetadata).isMaterializedChild()) {
+        String parent = ((ColumnMetadataImpl) columnMetadata).getParentColumn();
+        openStructParents.add(parent);
+        DataSource childDs = new ImmutableDataSource(columnMetadata, _indexContainerMap.get(colName));
+        if (OpenStructNaming.isSparseColumn(colName)) {
+          openStructSparseChildren.put(parent, childDs);
+        } else {
+          openStructDenseChildren.computeIfAbsent(parent, k -> new HashMap<>())
+              .put(OpenStructNaming.parseKey(colName), childDs);
+        }
+        continue;
+      }
+
       if (columnMetadata.getFieldSpec().getDataType() == FieldSpec.DataType.MAP) {
-        _dataSources.put(colName, new ImmutableMapDataSource(entry.getValue(), _indexContainerMap.get(colName)));
+        _dataSources.put(colName, new ImmutableMapDataSource(columnMetadata, _indexContainerMap.get(colName)));
       } else {
-        _dataSources.put(colName, new ImmutableDataSource(entry.getValue(), _indexContainerMap.get(colName)));
+        _dataSources.put(colName, new ImmutableDataSource(columnMetadata, _indexContainerMap.get(colName)));
+      }
+    }
+
+    if (!openStructParents.isEmpty()) {
+      Schema schema = segmentMetadata.getSchema();
+      for (String parent : openStructParents) {
+        FieldSpec fieldSpec = schema != null ? schema.getFieldSpecFor(parent) : null;
+        if (!(fieldSpec instanceof ComplexFieldSpec)) {
+          continue;
+        }
+        _dataSources.put(parent, new ImmutableOpenStructDataSource((ComplexFieldSpec) fieldSpec,
+            openStructDenseChildren.getOrDefault(parent, Map.of()),
+            openStructSparseChildren.get(parent), segmentMetadata.getTotalDocs()));
       }
     }
 
@@ -123,9 +167,7 @@ public class ImmutableSegmentImpl implements ImmutableSegment {
     _partitionDedupMetadataManager = partitionDedupMetadataManager;
   }
 
-  /**
-   * Enables upsert for this segment. It should be called before the segment getting queried.
-   */
+  /// Enables upsert for this segment. It should be called before the segment getting queried.
   public void enableUpsert(PartitionUpsertMetadataManager partitionUpsertMetadataManager,
       ThreadSafeMutableRoaringBitmap validDocIds, @Nullable ThreadSafeMutableRoaringBitmap queryableDocIds) {
     _partitionUpsertMetadataManager = partitionUpsertMetadataManager;
@@ -151,26 +193,23 @@ public class ImmutableSegmentImpl implements ImmutableSegment {
     return null;
   }
 
-  public void persistDocIdsSnapshot(String fileName, ThreadSafeMutableRoaringBitmap docIds) {
-    File docIdsSnapshotFile = getSnapshotFile(fileName);
-    try {
-      File tmpFile =
-          new File(SegmentDirectoryPaths.findSegmentDirectory(_segmentMetadata.getIndexDir()), fileName + "_tmp");
-      if (tmpFile.exists()) {
-        LOGGER.warn("Previous snapshot was not taken cleanly. Remove tmp file: {}", tmpFile);
-        FileUtils.deleteQuietly(tmpFile);
-      }
-      MutableRoaringBitmap docIdsSnapshot = docIds.getMutableRoaringBitmap();
-      try (DataOutputStream dataOutputStream = new DataOutputStream(new FileOutputStream(tmpFile))) {
-        docIdsSnapshot.serialize(dataOutputStream);
-      }
-      Preconditions.checkState(tmpFile.renameTo(docIdsSnapshotFile),
-          "Failed to rename tmp snapshot file: %s to snapshot file: %s", tmpFile, docIdsSnapshotFile);
-      LOGGER.info("Persisted docIds for segment: {} with: {}", getSegmentName(), docIdsSnapshot.getCardinality());
-    } catch (Exception e) {
-      LOGGER.warn("Caught exception while persisting docIds to snapshot file: {}, skipping",
-          docIdsSnapshotFile, e);
+  /// Persists the doc ids bitmap snapshot into the given file.
+  public void persistDocIdsSnapshot(String fileName, ThreadSafeMutableRoaringBitmap.CardinalityAndBytes docIdsSnapshot)
+      throws IOException {
+    File tmpFile =
+        new File(SegmentDirectoryPaths.findSegmentDirectory(_segmentMetadata.getIndexDir()), fileName + "_tmp");
+    if (tmpFile.exists()) {
+      LOGGER.warn("Previous snapshot was not taken cleanly. Remove tmp file: {}", tmpFile);
+      FileUtils.deleteQuietly(tmpFile);
     }
+    try (FileOutputStream fos = new FileOutputStream(tmpFile)) {
+      fos.write(docIdsSnapshot.getBytes());
+    }
+    File docIdsSnapshotFile = getSnapshotFile(fileName);
+    Preconditions.checkState(tmpFile.renameTo(docIdsSnapshotFile),
+        "Failed to rename tmp snapshot file: %s to snapshot file: %s", tmpFile, docIdsSnapshotFile);
+    LOGGER.info("Persisted {} with: {} docs for segment: {}", fileName, docIdsSnapshot.getCardinality(),
+        getSegmentName());
   }
 
   public void deleteSnapshotFile(String fileName) {
@@ -181,7 +220,7 @@ public class ImmutableSegmentImpl implements ImmutableSegment {
           LOGGER.warn("Cannot delete old snapshot file: {}, skipping", snapshotFile);
           return;
         }
-        LOGGER.info("Deleted snapshot for segment: {}", getSegmentName());
+        LOGGER.info("Deleted {} for segment: {}", fileName, getSegmentName());
       } catch (Exception e) {
         LOGGER.warn("Caught exception while deleting snapshot file: {}, skipping", snapshotFile);
       }
@@ -196,9 +235,7 @@ public class ImmutableSegmentImpl implements ImmutableSegment {
     return getSnapshotFile(fileName).exists();
   }
 
-  /**
-   * if re processing or reload is needed on a segment then return true
-   */
+  /// if re processing or reload is needed on a segment then return true
   public boolean isReloadNeeded(IndexLoadingConfig indexLoadingConfig)
       throws Exception {
     return ImmutableSegmentLoader.needPreprocess(_segmentDirectory, indexLoadingConfig);
@@ -288,6 +325,20 @@ public class ImmutableSegmentImpl implements ImmutableSegment {
   }
 
   @Override
+  public void onSegmentAdded() {
+    if (!_segmentAdded.compareAndSet(false, true)) {
+      // Already notified for this segment instance; a repeated registration must not notify the directory again.
+      return;
+    }
+    // Best-effort: this fires after the segment is already serving, so a failure cannot roll back the registration.
+    try {
+      _segmentDirectory.onSegmentAdded();
+    } catch (Exception e) {
+      LOGGER.warn("Caught exception in onSegmentAdded for segment: {}. Continuing with error.", getSegmentName(), e);
+    }
+  }
+
+  @Override
   public void offload() {
     if (_partitionUpsertMetadataManager != null) {
       _partitionUpsertMetadataManager.removeSegment(this);
@@ -362,6 +413,43 @@ public class ImmutableSegmentImpl implements ImmutableSegment {
   @Override
   public ThreadSafeMutableRoaringBitmap getQueryableDocIds() {
     return _queryableDocIds;
+  }
+
+  @Override
+  public boolean hasDeletedDocIds() {
+    return _hasDeletedDocIds;
+  }
+
+  /// Marks that this segment has externally-supplied deleted docs -- excluded at query time but still counted in
+  /// total docs -- so selection LIMIT pruning skips it.
+  public void setHasDeletedDocIds(boolean hasDeletedDocIds) {
+    _hasDeletedDocIds = hasDeletedDocIds;
+  }
+
+  @Override
+  public boolean hasNoQueryableDocs() {
+    if (_partitionUpsertMetadataManager == null) {
+      return false;
+    }
+    UpsertViewManager viewManager = _partitionUpsertMetadataManager.getUpsertViewManager();
+    if (viewManager != null) {
+      MutableRoaringBitmap queryableDocIdsSnapshot = viewManager.getQueryableDocIdsSnapshot(this);
+      if (queryableDocIdsSnapshot != null) {
+        return queryableDocIdsSnapshot.isEmpty();
+      }
+      return false;
+    }
+    ThreadSafeMutableRoaringBitmap queryableDocIds = getQueryableDocIds();
+    if (queryableDocIds != null) {
+      return queryableDocIds.isEmpty();
+    }
+    ThreadSafeMutableRoaringBitmap validDocIds = getValidDocIds();
+    return validDocIds != null && validDocIds.isEmpty();
+  }
+
+  @Override
+  public boolean hasNoValidDocs() {
+    return UpsertUtils.hasNoValidDocs(_partitionUpsertMetadataManager, this);
   }
 
   @Override

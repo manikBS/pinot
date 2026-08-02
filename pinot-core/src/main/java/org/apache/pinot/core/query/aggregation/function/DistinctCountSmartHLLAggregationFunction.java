@@ -25,6 +25,7 @@ import it.unimi.dsi.fastutil.objects.ObjectSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import javax.annotation.Nullable;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.pinot.common.CustomObject;
 import org.apache.pinot.common.request.context.ExpressionContext;
@@ -40,24 +41,26 @@ import org.roaringbitmap.PeekableIntIterator;
 import org.roaringbitmap.RoaringBitmap;
 
 
-/**
- * The {@code DistinctCountSmartHLLAggregationFunction} calculates the number of distinct values for a given expression
- * (both single-valued and multi-valued are supported).
- *
- * For aggregation-only queries, the distinct values are stored in a Set initially. Once the number of distinct values
- * exceeds a threshold, the Set will be converted into a HyperLogLog, and approximate result will be returned.
- *
- * The function takes an optional second argument for parameters:
- * - threshold: Threshold of the number of distinct values to trigger the conversion, 100_000 by default. Non-positive
- *              value means never convert.
- * - log2m: Log2m for the converted HyperLogLog, 12 by default.
- * Example of second argument: 'threshold=10;log2m=8'
- */
+/// The `DistinctCountSmartHLLAggregationFunction` calculates the number of distinct values for a given expression
+/// (both single-valued and multi-valued are supported).
+///
+/// For aggregation-only queries, the distinct values are stored in a Set initially. Once the number of distinct values
+/// exceeds a threshold, the Set will be converted into a HyperLogLog, and approximate result will be returned.
+///
+/// The function takes an optional second argument for parameters:
+/// - threshold: Threshold of the number of distinct values to trigger the conversion, 100_000 by default. Non-positive
+///              value means never convert.
+/// - log2m: Log2m for the converted HyperLogLog, 12 by default.
+/// - dictThreshold: Threshold for dictionary-encoded columns to trigger early conversion from RoaringBitmap to HLL
+///                  during aggregation. 100_000 by default. Set to Integer.MAX_VALUE to disable and convert only
+///                  at finalization.
+/// Example of second argument: 'threshold=10;log2m=8;dictThreshold=100000'
 @SuppressWarnings({"rawtypes", "unchecked"})
 public class DistinctCountSmartHLLAggregationFunction extends BaseDistinctCountSmartSketchAggregationFunction {
 
   private final int _threshold;
   private final int _log2m;
+  private final int _dictIdCardinalityThreshold;
 
   public DistinctCountSmartHLLAggregationFunction(List<ExpressionContext> arguments) {
     super(arguments.get(0));
@@ -66,9 +69,11 @@ public class DistinctCountSmartHLLAggregationFunction extends BaseDistinctCountS
       Parameters parameters = new Parameters(arguments.get(1).getLiteral().getStringValue());
       _threshold = parameters._threshold;
       _log2m = parameters._log2m;
+      _dictIdCardinalityThreshold = parameters._dictThreshold;
     } else {
       _threshold = Parameters.DEFAULT_THRESHOLD;
       _log2m = Parameters.DEFAULT_LOG2M;
+      _dictIdCardinalityThreshold = Parameters.DEFAULT_DICT_THRESHOLD;
     }
   }
 
@@ -92,19 +97,19 @@ public class DistinctCountSmartHLLAggregationFunction extends BaseDistinctCountS
       Map<ExpressionContext, BlockValSet> blockValSetMap) {
     BlockValSet blockValSet = blockValSetMap.get(_expression);
 
-    // For dictionary-encoded expression, store dictionary ids into the bitmap
-    Dictionary dictionary = blockValSet.getDictionary();
+    // For dictionary-encoded expression, use adaptive conversion strategy
+    Dictionary dictionary = blockValSet.isDictionaryEncoded() ? blockValSet.getDictionary() : null;
     if (dictionary != null) {
-      RoaringBitmap dictIdBitmap = getDictIdBitmap(aggregationResultHolder, dictionary);
-      if (blockValSet.isSingleValue()) {
-        int[] dictIds = blockValSet.getDictionaryIdsSV();
-        dictIdBitmap.addN(dictIds, 0, length);
-      } else {
-        int[][] dictIds = blockValSet.getDictionaryIdsMV();
-        for (int i = 0; i < length; i++) {
-          dictIdBitmap.add(dictIds[i]);
-        }
+      Object result = aggregationResultHolder.getResult();
+      // If already converted to HLL, aggregate directly
+      if (result instanceof HyperLogLog) {
+        aggregateDictIdsIntoHLL((HyperLogLog) result, dictionary, blockValSet, length);
+        return;
       }
+      // Otherwise, use RoaringBitmap and check threshold once per batch
+      RoaringBitmap dictIdBitmap = getDictIdBitmap(aggregationResultHolder, dictionary);
+      aggregateDictIdsIntoBitmap(dictIdBitmap, blockValSet, length);
+      checkAndConvertToHLL(aggregationResultHolder, dictIdBitmap);
       return;
     }
 
@@ -113,6 +118,44 @@ public class DistinctCountSmartHLLAggregationFunction extends BaseDistinctCountS
       aggregateIntoHLL(length, aggregationResultHolder, blockValSet);
     } else {
       aggregateIntoSet(length, aggregationResultHolder, blockValSet);
+    }
+  }
+
+  /// Aggregate dictionary IDs into HLL (when already converted).
+  private void aggregateDictIdsIntoHLL(HyperLogLog hyperLogLog, Dictionary dictionary, BlockValSet blockValSet,
+                                       int length) {
+    if (blockValSet.isSingleValue()) {
+      int[] dictIds = blockValSet.getDictionaryIdsSV();
+      for (int i = 0; i < length; i++) {
+        hyperLogLog.offer(dictionary.get(dictIds[i]));
+      }
+    } else {
+      int[][] dictIds = blockValSet.getDictionaryIdsMV();
+      for (int i = 0; i < length; i++) {
+        for (int dictId : dictIds[i]) {
+          hyperLogLog.offer(dictionary.get(dictId));
+        }
+      }
+    }
+  }
+
+  /// Aggregate dictionary IDs into RoaringBitmap (before conversion to HLL).
+  private void aggregateDictIdsIntoBitmap(RoaringBitmap dictIdBitmap, BlockValSet blockValSet, int length) {
+    if (blockValSet.isSingleValue()) {
+      int[] dictIds = blockValSet.getDictionaryIdsSV();
+      dictIdBitmap.addN(dictIds, 0, length);
+    } else {
+      int[][] dictIds = blockValSet.getDictionaryIdsMV();
+      for (int i = 0; i < length; i++) {
+        dictIdBitmap.add(dictIds[i]);
+      }
+    }
+  }
+
+  /// Check and convert to HLL if cardinality threshold exceeded for non-group-by aggregation.
+  private void checkAndConvertToHLL(AggregationResultHolder aggregationResultHolder, RoaringBitmap dictIdBitmap) {
+    if (dictIdBitmap.getCardinality() > _dictIdCardinalityThreshold) {
+      aggregationResultHolder.setValue(convertToHLL(aggregationResultHolder.getResult()));
     }
   }
 
@@ -323,7 +366,10 @@ public class DistinctCountSmartHLLAggregationFunction extends BaseDistinctCountS
   }
 
   @Override
-  public Integer extractFinalResult(Object intermediateResult) {
+  public Integer extractFinalResult(@Nullable Object intermediateResult) {
+    if (intermediateResult == null) {
+      return 0;
+    }
     if (intermediateResult instanceof HyperLogLog) {
       return (int) ((HyperLogLog) intermediateResult).cardinality();
     } else {
@@ -336,14 +382,10 @@ public class DistinctCountSmartHLLAggregationFunction extends BaseDistinctCountS
     return finalResult1 + finalResult2;
   }
 
-  /**
-   * Returns the dictionary id bitmap from the result holder or creates a new one if it does not exist.
-   */
+  /// Returns the dictionary id bitmap from the result holder or creates a new one if it does not exist.
   // helper methods for dict/value set conversions are provided by the base class
 
-  /**
-   * Helper method to read dictionary and convert dictionary ids to a HyperLogLog for dictionary-encoded expression.
-   */
+  /// Helper method to read dictionary and convert dictionary ids to a HyperLogLog for dictionary-encoded expression.
   private HyperLogLog convertToHLL(BaseDistinctCountSmartSketchAggregationFunction.DictIdsWrapper dictIdsWrapper) {
     HyperLogLog hyperLogLog = new HyperLogLog(_log2m);
     Dictionary dictionary = dictIdsWrapper._dictionary;
@@ -366,15 +408,18 @@ public class DistinctCountSmartHLLAggregationFunction extends BaseDistinctCountS
   }
 
   @Override
+  protected int getDictIdCardinalityThreshold() {
+    return _dictIdCardinalityThreshold;
+  }
+
+  @Override
   protected IllegalStateException getIllegalDataTypeException(DataType dataType, boolean singleValue) {
     return new IllegalStateException(
         "Illegal data type for DISTINCT_COUNT_SMART_HLL aggregation function: " + dataType + (singleValue ? ""
             : "_MV"));
   }
 
-  /**
-   * Helper class to wrap the parameters.
-   */
+  /// Helper class to wrap the parameters.
   private static class Parameters {
     static final char PARAMETER_DELIMITER = ';';
     static final char PARAMETER_KEY_VALUE_SEPARATOR = '=';
@@ -385,6 +430,11 @@ public class DistinctCountSmartHLLAggregationFunction extends BaseDistinctCountS
     @Deprecated
     static final String DEPRECATED_THRESHOLD_KEY = "HLLCONVERSIONTHRESHOLD";
 
+    static final String DICT_THRESHOLD_KEY = "DICTTHRESHOLD";
+    // 100K dictionary IDs to trigger bitmap → HLL conversion by default
+    // Set to Integer.MAX_VALUE to disable adaptive conversion
+    static final int DEFAULT_DICT_THRESHOLD = 100_000;
+
     static final String LOG2M_KEY = "LOG2M";
     // Use 12 by default to get good accuracy for DistinctCount
     static final int DEFAULT_LOG2M = 12;
@@ -393,6 +443,7 @@ public class DistinctCountSmartHLLAggregationFunction extends BaseDistinctCountS
 
     int _threshold = DEFAULT_THRESHOLD;
     int _log2m = DEFAULT_LOG2M;
+    int _dictThreshold = DEFAULT_DICT_THRESHOLD;
 
     Parameters(String parametersString) {
       StringUtils.deleteWhitespace(parametersString);
@@ -409,6 +460,13 @@ public class DistinctCountSmartHLLAggregationFunction extends BaseDistinctCountS
             // Treat non-positive threshold as unlimited
             if (_threshold <= 0) {
               _threshold = Integer.MAX_VALUE;
+            }
+            break;
+          case DICT_THRESHOLD_KEY:
+            _dictThreshold = Integer.parseInt(value);
+            // Treat non-positive threshold as unlimited
+            if (_dictThreshold <= 0) {
+              _dictThreshold = Integer.MAX_VALUE;
             }
             break;
           case LOG2M_KEY:

@@ -20,11 +20,12 @@ package org.apache.pinot.segment.local.upsert;
 
 import com.google.common.base.Preconditions;
 import java.util.List;
+import java.util.function.Supplier;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.pinot.segment.local.data.manager.TableDataManager;
-import org.apache.pinot.segment.local.utils.SegmentOperationsThrottler;
+import org.apache.pinot.segment.local.utils.SegmentOperationsThrottlerSet;
 import org.apache.pinot.spi.config.table.TableConfig;
 import org.apache.pinot.spi.config.table.UpsertConfig;
 import org.apache.pinot.spi.data.Schema;
@@ -40,13 +41,13 @@ public abstract class BaseTableUpsertMetadataManager implements TableUpsertMetad
 
   protected String _tableNameWithType;
   protected UpsertContext _context;
-  protected SegmentOperationsThrottler _segmentOperationsThrottler;
+  protected SegmentOperationsThrottlerSet _segmentOperationsThrottlerSet;
 
   @Override
   public void init(PinotConfiguration instanceUpsertConfig, TableConfig tableConfig, Schema schema,
-      TableDataManager tableDataManager, @Nullable SegmentOperationsThrottler segmentOperationsThrottler) {
+      TableDataManager tableDataManager, @Nullable SegmentOperationsThrottlerSet segmentOperationsThrottlerSet) {
     _tableNameWithType = tableConfig.getTableName();
-    _segmentOperationsThrottler = segmentOperationsThrottler;
+    _segmentOperationsThrottlerSet = segmentOperationsThrottlerSet;
 
     Preconditions.checkArgument(tableConfig.isUpsertEnabled(),
         "Upsert must be enabled for table: %s", _tableNameWithType);
@@ -59,12 +60,21 @@ public abstract class BaseTableUpsertMetadataManager implements TableUpsertMetad
 
     List<String> comparisonColumns = upsertConfig.getComparisonColumns();
     if (comparisonColumns == null) {
-      comparisonColumns = List.of(tableConfig.getValidationConfig().getTimeColumnName());
+      String timeColumnName = tableConfig.getValidationConfig().getTimeColumnName();
+      if (timeColumnName != null) {
+        comparisonColumns = List.of(timeColumnName);
+      } else {
+        // No comparison column and no time column: use segment creation time for comparison
+        comparisonColumns = List.of();
+      }
     }
 
-    PartialUpsertHandler partialUpsertHandler = null;
+    // PartialUpsertHandler is not thread safe, so hand each partition a factory rather than one shared instance.
+    Supplier<PartialUpsertHandler> partialUpsertHandlerSupplier = null;
     if (upsertConfig.getMode() == UpsertConfig.Mode.PARTIAL) {
-      partialUpsertHandler = new PartialUpsertHandler(schema, comparisonColumns, upsertConfig);
+      List<String> handlerComparisonColumns = comparisonColumns;
+      partialUpsertHandlerSupplier =
+          () -> new PartialUpsertHandler(tableConfig, schema, handlerComparisonColumns, upsertConfig);
     }
 
     boolean enableSnapshot = upsertConfig.getSnapshot()
@@ -122,7 +132,7 @@ public abstract class BaseTableUpsertMetadataManager implements TableUpsertMetad
         .setPrimaryKeyColumns(primaryKeyColumns)
         .setHashFunction(upsertConfig.getHashFunction())
         .setComparisonColumns(comparisonColumns)
-        .setPartialUpsertHandler(partialUpsertHandler)
+        .setPartialUpsertHandlerSupplier(partialUpsertHandlerSupplier)
         .setDeleteRecordColumn(upsertConfig.getDeleteRecordColumn())
         .setDropOutOfOrderRecord(upsertConfig.isDropOutOfOrderRecord())
         .setOutOfOrderRecordColumn(upsertConfig.getOutOfOrderRecordColumn())
@@ -142,10 +152,8 @@ public abstract class BaseTableUpsertMetadataManager implements TableUpsertMetad
     initCustomVariables();
   }
 
-  /**
-   * Can be overridden to initialize custom variables after other variables are set but before preload starts. This is
-   * needed because preload will load segments which might require these custom variables.
-   */
+  /// Can be overridden to initialize custom variables after other variables are set but before preload starts. This is
+  /// needed because preload will load segments which might require these custom variables.
   protected void initCustomVariables() {
   }
 

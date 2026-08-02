@@ -25,35 +25,37 @@ import org.apache.pinot.segment.spi.AggregationFunctionType;
 import org.apache.pinot.spi.data.FieldSpec.DataType;
 
 
-/**
- * The {@code ValueAggregatorFactory} class is the factory for all value aggregators.
- */
+/// The `ValueAggregatorFactory` class is the factory for all value aggregators.
 @SuppressWarnings("rawtypes")
 public class ValueAggregatorFactory {
   private ValueAggregatorFactory() {
   }
 
-  /**
-   * Returns a new instance of value aggregator for the given aggregation type.
-   *
-   * @param aggregationType Aggregation type
-   * @return Value aggregator
-   */
+  /// Returns a new instance of value aggregator for the given aggregation type.
+  ///
+  /// @param aggregationType Aggregation type
+  /// @return Value aggregator
   public static ValueAggregator getValueAggregator(AggregationFunctionType aggregationType,
       List<ExpressionContext> arguments) {
     switch (aggregationType) {
       case COUNT:
         return new CountValueAggregator();
+      case COUNTMV:
+        return new CountMVValueAggregator();
       case MIN:
         return new MinValueAggregator();
       case MAX:
         return new MaxValueAggregator();
       case SUM:
         return new SumValueAggregator();
+      case SUMMV:
+        return new SumMVValueAggregator();
       case SUMPRECISION:
         return new SumPrecisionValueAggregator(arguments);
       case AVG:
         return new AvgValueAggregator();
+      case AVGMV:
+        return new AvgMVValueAggregator();
       case MINMAXRANGE:
         return new MinMaxRangeValueAggregator();
       case DISTINCTCOUNTBITMAP:
@@ -89,26 +91,30 @@ public class ValueAggregatorFactory {
     }
   }
 
-  /**
-   * Returns the data type of the aggregated value for the given aggregation type.
-   *
-   * @param aggregationType Aggregation type
-   * @return Data type of the aggregated value
-   */
+  /// Returns the data type of the aggregated value for the given aggregation type.
+  ///
+  /// @param aggregationType Aggregation type
+  /// @return Data type of the aggregated value
   public static DataType getAggregatedValueType(AggregationFunctionType aggregationType) {
     switch (aggregationType) {
       case COUNT:
         return CountValueAggregator.AGGREGATED_VALUE_TYPE;
+      case COUNTMV:
+        return CountMVValueAggregator.AGGREGATED_VALUE_TYPE;
       case MIN:
         return MinValueAggregator.AGGREGATED_VALUE_TYPE;
       case MAX:
         return MaxValueAggregator.AGGREGATED_VALUE_TYPE;
       case SUM:
         return SumValueAggregator.AGGREGATED_VALUE_TYPE;
+      case SUMMV:
+        return SumMVValueAggregator.AGGREGATED_VALUE_TYPE;
       case SUMPRECISION:
         return SumPrecisionValueAggregator.AGGREGATED_VALUE_TYPE;
       case AVG:
         return AvgValueAggregator.AGGREGATED_VALUE_TYPE;
+      case AVGMV:
+        return AvgMVValueAggregator.AGGREGATED_VALUE_TYPE;
       case MINMAXRANGE:
         return MinMaxRangeValueAggregator.AGGREGATED_VALUE_TYPE;
       case DISTINCTCOUNTBITMAP:

@@ -20,7 +20,6 @@ package org.apache.pinot.integration.tests.logicaltable;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import java.io.File;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -30,8 +29,6 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.apache.commons.io.FileUtils;
-import org.apache.pinot.controller.helix.ControllerRequestClient;
-import org.apache.pinot.controller.helix.ControllerTest;
 import org.apache.pinot.integration.tests.BaseClusterIntegrationTestSet;
 import org.apache.pinot.integration.tests.ClusterIntegrationTestUtils;
 import org.apache.pinot.integration.tests.QueryAssert;
@@ -94,13 +91,13 @@ public abstract class BaseLogicalTableIntegrationTest extends BaseClusterIntegra
   public void tearDownSuite()
       throws Exception {
     LOGGER.info("Tearing down integration test suite");
-    // Stop Kafka
-    LOGGER.info("Stop Kafka in the integration test suite");
-    stopKafka();
     // Shutdown the Pinot cluster
     stopServer();
     stopBroker();
     stopController();
+    // Stop Kafka
+    LOGGER.info("Stop Kafka in the integration test suite");
+    stopKafka();
     stopZk();
     FileUtils.deleteDirectory(_tempDir);
     LOGGER.info("Finished tearing down integration test suite");
@@ -214,8 +211,8 @@ public abstract class BaseLogicalTableIntegrationTest extends BaseClusterIntegra
     long maxEndTimeMillis = Long.MIN_VALUE;
     try {
       for (String tableName : getOfflineTableNames()) {
-        String url = _controllerRequestURLBuilder.forSegmentMetadata(tableName, TableType.OFFLINE);
-        String response = ControllerTest.sendGetRequest(url);
+        String response = getOrCreateAdminClient().getSegmentClient()
+            .getSegmentsMetadata(tableName, TableType.OFFLINE.toString());
         JsonNode jsonNode = JsonUtils.stringToJsonNode(response);
         Iterator<String> stringIterator = jsonNode.fieldNames();
         while (stringIterator.hasNext()) {
@@ -228,7 +225,7 @@ public abstract class BaseLogicalTableIntegrationTest extends BaseClusterIntegra
           }
         }
       }
-    } catch (IOException e) {
+    } catch (Exception e) {
       throw new RuntimeException("Failed to get the time boundary table", e);
     }
     return timeBoundaryTable != null ? List.of(TableNameBuilder.OFFLINE.tableNameWithType(timeBoundaryTable))
@@ -262,9 +259,7 @@ public abstract class BaseLogicalTableIntegrationTest extends BaseClusterIntegra
     ClusterIntegrationTestUtils.setUpH2TableWithAvro(avroFiles, getLogicalTableName(), _h2Connection);
   }
 
-  /**
-   * Creates a new OFFLINE table config.
-   */
+  /// Creates a new OFFLINE table config.
   protected TableConfig createOfflineTableConfig(String tableName) {
     // @formatter:off
     return new TableConfigBuilder(TableType.OFFLINE)
@@ -315,29 +310,25 @@ public abstract class BaseLogicalTableIntegrationTest extends BaseClusterIntegra
   }
 
   protected void createLogicalTable()
-      throws IOException {
-    String addLogicalTableUrl = _controllerRequestURLBuilder.forLogicalTableCreate();
+      throws Exception {
     Schema logicalTableSchema = createSchema(getSchemaFileName());
     logicalTableSchema.setSchemaName(getLogicalTableName());
     addSchema(logicalTableSchema);
     LogicalTableConfig logicalTable =
         getLogicalTableConfig(getLogicalTableName(), getPhysicalTableNames(), getBrokerTenant());
     String resp =
-        ControllerTest.sendPostRequest(addLogicalTableUrl, logicalTable.toSingleLineJsonString(), getHeaders());
+        getOrCreateAdminClient().getLogicalTableClient().createLogicalTable(logicalTable.toSingleLineJsonString());
     assertEquals(resp, "{\"unrecognizedProperties\":{},\"status\":\"" + getLogicalTableName()
         + " logical table successfully added.\"}");
   }
 
   protected LogicalTableConfig getLogicalTableConfig(String logicalTableName)
-      throws IOException {
-    String getLogicalTableUrl =
-        _controllerRequestURLBuilder.forLogicalTableGet(logicalTableName);
-    String resp = ControllerTest.sendGetRequest(getLogicalTableUrl, getHeaders());
-    return LogicalTableConfig.fromString(resp);
+      throws Exception {
+    return getOrCreateAdminClient().getLogicalTableClient().getLogicalTableConfig(logicalTableName);
   }
 
   private void createLogicalTableWithEmptyOfflineTable()
-      throws IOException {
+      throws Exception {
     Schema schema = createSchema(getSchemaFileName());
     schema.setSchemaName(TableNameBuilder.extractRawTableName(EMPTY_OFFLINE_TABLE_NAME));
     addSchema(schema);
@@ -351,18 +342,17 @@ public abstract class BaseLogicalTableIntegrationTest extends BaseClusterIntegra
 
     String logicalTableName = EMPTY_OFFLINE_TABLE_NAME + "_logical";
 
-    String addLogicalTableUrl = _controllerRequestURLBuilder.forLogicalTableCreate();
     Schema logicalTableSchema = createSchema(getSchemaFileName());
     logicalTableSchema.setSchemaName(logicalTableName);
     addSchema(logicalTableSchema);
     LogicalTableConfigBuilder builder =
         new LogicalTableConfigBuilder().setTableName(logicalTableName)
             .setBrokerTenant(DEFAULT_TENANT)
-            .setRefOfflineTableName(refOfflineTableName)
-            .setPhysicalTableConfigMap(physicalTableConfigMap);
+        .setRefOfflineTableName(refOfflineTableName)
+        .setPhysicalTableConfigMap(physicalTableConfigMap);
 
-    String resp =
-        ControllerTest.sendPostRequest(addLogicalTableUrl, builder.build().toSingleLineJsonString(), getHeaders());
+    String resp = getOrCreateAdminClient().getLogicalTableClient()
+        .createLogicalTable(builder.build().toSingleLineJsonString());
     assertEquals(resp, "{\"unrecognizedProperties\":{},\"status\":\"" + logicalTableName
         + " logical table successfully added.\"}");
   }
@@ -381,14 +371,6 @@ public abstract class BaseLogicalTableIntegrationTest extends BaseClusterIntegra
       return _sharedClusterTestSuite.getZkUrl();
     }
     return super.getZkUrl();
-  }
-
-  @Override
-  public ControllerRequestClient getControllerRequestClient() {
-    if (_sharedClusterTestSuite != this) {
-      return _sharedClusterTestSuite.getControllerRequestClient();
-    }
-    return super.getControllerRequestClient();
   }
 
   @Override
@@ -431,7 +413,7 @@ public abstract class BaseLogicalTableIntegrationTest extends BaseClusterIntegra
   @Override
   protected void waitForAllDocsLoaded(long timeoutMs)
       throws Exception {
-    waitForDocsLoaded(timeoutMs, true, getLogicalTableName());
+    waitForAllDocsLoaded(getLogicalTableName(), timeoutMs);
   }
 
   @Override
@@ -443,7 +425,7 @@ public abstract class BaseLogicalTableIntegrationTest extends BaseClusterIntegra
 
   @Test
   public void verifyLogicalTableConfig()
-      throws IOException {
+      throws Exception {
     LogicalTableConfig logicalTableConfig = getLogicalTableConfig(getLogicalTableName());
     assertEquals(logicalTableConfig.getPhysicalTableConfigMap().size(), getPhysicalTableNames().size());
     assertEquals(new HashSet<>(getPhysicalTableNames()), logicalTableConfig.getPhysicalTableConfigMap().keySet());
@@ -467,6 +449,35 @@ public abstract class BaseLogicalTableIntegrationTest extends BaseClusterIntegra
       throws Exception {
     setUseMultiStageQueryEngine(useMultiStageQueryEngine);
     super.testGeneratedQueries(true, useMultiStageQueryEngine);
+  }
+
+  /// End-to-end smoke test that enabling broker segment pruning on the MSE logical-planner path executes cleanly for a
+  /// logical table and does not change results. It exercises the logical-table routing path where the leaf-stage filter
+  /// is forwarded (via `WorkerManager.buildLogicalTableRoutingBrokerRequest`) into each physical table's routing
+  /// request so the `LogicalTableRouteProvider` runs segment pruners over a filter-bearing request rather than a
+  /// bare `SELECT *`. A malformed forwarded request would surface here as an exception or a changed result.
+  ///
+  /// Note: these physical tables carry no segment-pruner config, so this asserts correctness, not that a segment was
+  /// actually pruned; the exact pruning behavior is unit-tested in `WorkerManagerTest`.
+  @Test(dataProvider = "useBothQueryEngines")
+  public void testBrokerPruningPreservesLogicalTableResults(boolean useMultiStageQueryEngine)
+      throws Exception {
+    setUseMultiStageQueryEngine(useMultiStageQueryEngine);
+    String logicalTableName = getLogicalTableName();
+    String filteredQuery = "SELECT COUNT(*) FROM " + logicalTableName + " WHERE DaysSinceEpoch > 16312";
+
+    // Broker pruning is on by default on the MSE logical planner path; disable it explicitly for the baseline so the
+    // two runs exercise different routing paths.
+    JsonNode withoutPruning = postQuery("SET useBrokerPruning=false; " + filteredQuery);
+    assertTrue(withoutPruning.get("exceptions").isEmpty(), "Unexpected exceptions without broker pruning");
+
+    JsonNode withPruning = postQuery(filteredQuery);
+    assertTrue(withPruning.get("exceptions").isEmpty(), "Unexpected exceptions with broker pruning");
+
+    // Broker pruning is a routing optimization only; the result must be identical to the unpruned run.
+    assertEquals(withPruning.get("resultTable").get("rows").get(0).get(0).asLong(),
+        withoutPruning.get("resultTable").get("rows").get(0).get(0).asLong(),
+        "Broker pruning changed the result of a logical table query");
   }
 
   @Test
@@ -648,6 +659,60 @@ public abstract class BaseLogicalTableIntegrationTest extends BaseClusterIntegra
         .containsMessage("TableDoesNotExistError");
 
     query = "SELECT count(*) FROM " + getLogicalTableName() + " JOIN known  ON "
+        + getLogicalTableName() + ".FlightNum = unknown.FlightNum";
+    response = postQueryToController(query);
+    QueryAssert.assertThat(response).firstException().hasErrorCode(QueryErrorCode.TABLE_DOES_NOT_EXIST)
+        .containsMessage("TableDoesNotExistError");
+  }
+
+  @Test
+  void testPhysicalOptimizerWithLogicalTable()
+      throws Exception {
+    setUseMultiStageQueryEngine(true);
+    setUsePhysicalOptimizer(true);
+
+    // Test simple count query with physical optimizer
+    @Language("sql")
+    String query = "SET usePhysicalOptimizer=true; SELECT count(*) FROM " + getLogicalTableName();
+    JsonNode response = postQueryToController(query);
+    assertNoError(response);
+    assertTrue(response.get("numDocsScanned").asLong() > 0,
+        "Expected some documents to be scanned");
+
+    // Test query with filter
+    query = "SET usePhysicalOptimizer=true; SELECT count(*) FROM " + getLogicalTableName()
+        + " WHERE FlightNum > 0";
+    response = postQueryToController(query);
+    assertNoError(response);
+
+    // Test query with aggregation
+    query = "SET usePhysicalOptimizer=true; SELECT Carrier, count(*) FROM " + getLogicalTableName()
+        + " GROUP BY Carrier LIMIT 10";
+    response = postQueryToController(query);
+    assertNoError(response);
+
+    // Test query with order by
+    query = "SET usePhysicalOptimizer=true; SELECT FlightNum, Carrier FROM " + getLogicalTableName()
+        + " ORDER BY FlightNum LIMIT 10";
+    response = postQueryToController(query);
+    assertNoError(response);
+
+    // Test query with join
+    query = "SET usePhysicalOptimizer=true; SELECT count(*) FROM " + getLogicalTableName() + " JOIN "
+        + getPhysicalTableNames().get(0) + " ON " + getLogicalTableName() + ".FlightNum = "
+        + getPhysicalTableNames().get(0) + ".FlightNum";
+    response = postQueryToController(query);
+    assertNoError(response);
+
+    // Test error case: unknown table in join
+    query = "SET usePhysicalOptimizer=true; SELECT count(*) FROM unknown JOIN " + getPhysicalTableNames().get(0)
+        + " ON unknown.FlightNum = " + getPhysicalTableNames().get(0) + ".FlightNum";
+    response = postQueryToController(query);
+    QueryAssert.assertThat(response).firstException().hasErrorCode(QueryErrorCode.TABLE_DOES_NOT_EXIST)
+        .containsMessage("TableDoesNotExistError");
+
+    // Test error case: unknown table alias
+    query = "SET usePhysicalOptimizer=true; SELECT count(*) FROM " + getLogicalTableName() + " JOIN known ON "
         + getLogicalTableName() + ".FlightNum = unknown.FlightNum";
     response = postQueryToController(query);
     QueryAssert.assertThat(response).firstException().hasErrorCode(QueryErrorCode.TABLE_DOES_NOT_EXIST)

@@ -42,9 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
 
 
-/**
- * Unit tests for {@link AuditRequestProcessor}.
- */
+/// Unit tests for [AuditRequestProcessor].
 public class AuditRequestProcessorTest {
 
   @Mock
@@ -65,7 +63,8 @@ public class AuditRequestProcessorTest {
   @BeforeMethod
   public void setUp() {
     MockitoAnnotations.openMocks(this);
-    _processor = new AuditRequestProcessor(_configManager, mock(AuditIdentityResolver.class), _auditUrlPathFilter);
+    _processor = new AuditRequestProcessor(_configManager, mock(AuditIdentityResolver.class), _auditUrlPathFilter,
+        mock(AuditMetrics.class));
 
     _defaultConfig = new AuditConfig();
     _defaultConfig.setEnabled(true);
